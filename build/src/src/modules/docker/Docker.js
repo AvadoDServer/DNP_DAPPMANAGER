@@ -5,21 +5,21 @@ const { mapValues } = require("lodash");
 
 const logs = require("logs.js")(module);
 
-
-function iterate(obj) {
-  for (var property in obj) {
-      if (obj.hasOwnProperty(property)) {
-          if (typeof obj[property] == "object") {
-              iterate(obj[property]);
-          }
-          else {
-            logs.info(`property ${property} type ${typeof obj[property]}`)
-          }
-      }
-  }
-}
-logs.info(`dockercommands`)
-iterate(dockerCommands);
+// show list of docker commands
+// function iterate(obj) {
+//   for (var property in obj) {
+//       if (obj.hasOwnProperty(property)) {
+//           if (typeof obj[property] == "object") {
+//               iterate(obj[property]);
+//           }
+//           else {
+//             logs.info(`property ${property} type ${typeof obj[property]}`)
+//           }
+//       }
+//   }
+// }
+// logs.info(`dockercommands`)
+// iterate(dockerCommands);
 
 /**
  * Wraps the docker command getters with the shell utility.

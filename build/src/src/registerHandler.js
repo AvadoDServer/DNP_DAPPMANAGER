@@ -85,7 +85,7 @@ const wrapErrors = (handler, event) =>
 const registerHandler = (session, event, handler) => {
   return session.register(event, wrapErrors(handler, event)).then(
     () => {
-      logs.info(`Registered event: ${event}`);
+      // logs.info(`Registered event: ${event}`);
     },
     e => {
       logs.error(`Error registering event ${event}: ${(e || {}).error}`);

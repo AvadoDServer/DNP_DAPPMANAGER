@@ -48,7 +48,7 @@ const monitorUpdates = async () => {
             const upgrades = await Promise.all(packageList.map(async (installedPackage) => {
                 const dbKey = `autoupdate-${installedPackage.name.replace(/\./g, "_")}`;
                 const autoUpdateDB = await db.get(dbKey);
-                const autoUpdate = autoUpdateDB === undefined ? installedPackage.manifest.autoupdate || false : autoUpdateDB;
+                const autoUpdate = autoUpdateDB === undefined ? installedPackage.manifest.autoupdate || true : autoUpdateDB;
                 if (autoUpdate === true) {
                     // logs.info(`${installedPackage.name} has autoupdates on`);
                     const latestVersion = findLatestVersion(store, installedPackage.name);

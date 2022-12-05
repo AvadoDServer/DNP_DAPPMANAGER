@@ -102,19 +102,26 @@ const listPackages = async () => {
             // Add autoupdate
             const dbKey = `autoupdate-${dnp.name.replace(/\./g, "_")}`;
             const autoUpdateDB = await db.get(dbKey);
-            const autoUpdateDefault = dnp && dnp.manifest && dnp.manifest.autoupdate === true;
+            // const autoUpdateDefault = dnp && dnp.manifest && dnp.manifest.autoupdate === true;
+            // Autoupdate is default TRUE unless defined
+            // This forces core packages to auto-update
+            const autoUpdateDefault = true;
             const autoUpdate = autoUpdateDB === undefined ? autoUpdateDefault : autoUpdateDB;
             if (dnp && !dnp.manifest) {
-                dnp.manifest = {};  // example installed CORE packages have no manifest
+                dnp.manifest = {};  // installed CORE packages have no manifest
             }
             dnp.manifest.autoupdate = autoUpdate;
         } catch (e) {
             logs.warn(`Error appending ${(dnp || {}).name} autoupdate: ${e.message}`);
         }
+
         return dnp;
     }));
 
-
+    console.log(`DNPs fetched`);
+    dnpList && dnpList.map((d)=>{
+        console.log(`${d.name} - autoupdate ${d.manifest.autoupdate}`)
+    });
 
     return {
         message: `Listing ${dnpList.length} packages`,

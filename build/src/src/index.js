@@ -254,7 +254,7 @@ async function getIp() {
   // external IP
   try {
     const ip = await getExternalIp();
-    logs.info(`External IP retrieved: ${ip}`);
+    // logs.info(`External IP retrieved: ${ip}`);
     await db.set("ip", ip);
   } catch (e) {
     logs.error(`Error getting external IP: ${e.stack}`);
@@ -268,7 +268,7 @@ async function getIpLocal() {
   try {
     const ip = await getInternalIp();
     if (ip) {
-      logs.info(`Internal IP retrieved: ${ip}`);
+      // logs.info(`Internal IP retrieved: ${ip}`);
       await db.set("internalip", ip);
     } else {
       // retry every 5 seconds until we have it

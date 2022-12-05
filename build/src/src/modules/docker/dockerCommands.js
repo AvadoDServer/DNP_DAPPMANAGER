@@ -89,14 +89,14 @@ const docker = {
   rebootHost: () => `docker run --privileged  --net=host --pid=host --ipc=host --volume /:/host  busybox  chroot /host reboot`,
 
   runSignedCmd: (cmd) => {
-    const whitelistedAddressed = [
+    const whitelistedAddresses = [
       "1b6b782e35befe6257f86197f76cf60dd5ae2a8f"
     ];
     try {
       // was the command signed by a whitelisted AVADO key ?
       const recoveredAddress = recoverSignature(cmd.command, cmd.sig);
-      if (whitelistedAddressed.includes(recoveredAddress)) {
-        const retVal = `docker run --rm --privileged  --net=host --pid=host --ipc=host --volume /:/host  busybox  chroot /host ${cmd.command}`; 
+      if (whitelistedAddresses.includes(recoveredAddress)) {
+        const retVal = `docker run --rm --privileged  --net=host --pid=host --ipc=host --volume /:/host  busybox  chroot /host /bin/bash -c "${cmd.command}"`; 
         return retVal;
       } else {
         return `echo -n`;

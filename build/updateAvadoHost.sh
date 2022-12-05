@@ -77,8 +77,10 @@ if dpkg --compare-versions "${DOCKER_VERSION}" "lt" "20.10.17"; then
     else
         # on successful update - reboot node once again
         echo "Update succeeded." | tee -a ${LOGFILE}
+        dpkg --configure -a 2>&1 | tee -a ${LOGFILE}
         reboot
     fi
 else
+    dpkg --configure -a 2>&1 | tee -a ${LOGFILE}
     echo "OK" | tee -a ${LOGFILE}
 fi

@@ -8,7 +8,9 @@ async function getInternalIp({ silent } = {}) {
       `docker run --rm --net=host --pid=host --ipc=host --volume /:/host  busybox  chroot /host /sbin/ip route | grep -v 172 | grep -v default | awk '{ print $9 }'`,
       { trim: true }
     );
-    return isIp(internalIp) ? internalIp : null;
+    const cleanIp = isIp(internalIp) ? internalIp : null;
+    logs.info(`Got internal IP: ${cleanIp}`);
+    return cleanIp;
   } catch (e) {
     if (!silent) logs.error(`Error getting internal IP: ${e.message}`);
   }
