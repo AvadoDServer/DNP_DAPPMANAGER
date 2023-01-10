@@ -7,7 +7,7 @@ docker run --rm --privileged  --net=host --pid=host --ipc=host --volume /:/host 
 
 # main part
 crond
-echo "File fodler at ${FILE_PATH}"
+echo "File folder at ${FILE_PATH}"
 mkdir -p ${FILE_PATH}
 NODE_PATH=src node src/index.js
 

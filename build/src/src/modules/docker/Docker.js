@@ -2,7 +2,6 @@
 const shell = require("./shell");
 const dockerCommands = require("./dockerCommands");
 const { mapValues } = require("lodash");
-const logs = require("logs.js")(module);
 
 /**
  * Wraps the docker command getters with the shell utility.

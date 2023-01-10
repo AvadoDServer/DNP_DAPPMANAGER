@@ -6,8 +6,9 @@ WORKDIR /usr/src/app
 
 # Install app dependencies to use docker's layer cache
 COPY build/src/package.json ./
-COPY build/src/yarn.lock ./
-RUN yarn install --production
+# COPY build/src/yarn.lock ./
+#RUN yarn install --production
+RUN npm i
 
 # Add source
 COPY build/src .

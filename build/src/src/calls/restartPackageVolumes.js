@@ -11,7 +11,7 @@ const { stringIncludes } = require("utils/strings");
  *
  * @param {string} id DNP .eth name
  */
-async function restartPackageVolumes({ id, timeout = 180 }) {
+async function restartPackageVolumes({ id }) {
   if (!id) throw Error("kwarg id must be defined");
 
   const dnpList = await dockerList.listContainers();

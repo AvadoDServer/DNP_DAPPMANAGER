@@ -10,7 +10,7 @@ const filePath = process.env.FILE_PATH;
  */
 const createJWT = async () => {
 
-    fileName = path.join(filePath, "jwttoken.txt");
+    const fileName = path.join(filePath, "jwttoken.txt");
 
     let checkFileExists = s => new Promise(r => fs.access(s, fs.constants.F_OK, e => r(!e)))
 

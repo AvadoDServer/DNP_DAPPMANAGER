@@ -31,6 +31,7 @@ logs.info(`Started static file server`);
 require("./watchers/chains");
 require("./watchers/diskUsage");
 require("./watchers/autoupdate");
+require("./watchers/certificates");
 
 // Print version data
 require("./utils/getVersionData");
