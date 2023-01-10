@@ -21,12 +21,6 @@ const getExternalIp = require("./utils/getExternalIp");
 // Create JWT
 calls.createJWT();
 
-// serve local files from FILE_PATH (for JWT, certificates)
-const app = express();
-app.use(express.static(process.env.FILE_PATH));
-app.listen(80);
-logs.info(`Started static file server`);
-
 // Start watchers
 require("./watchers/chains");
 require("./watchers/diskUsage");
@@ -35,6 +29,15 @@ require("./watchers/certificates");
 
 // Print version data
 require("./utils/getVersionData");
+
+// Create JWT
+calls.createJWT();
+
+// serve local files from FILE_PATH (for JWT, certificates)
+const app = express();
+app.use(express.static(process.env.FILE_PATH));
+app.listen(80);
+logs.info(`Started static file server`);
 
 /*
  * Connection configuration
@@ -61,7 +64,7 @@ const connection = new autobahn.Connection({ url, realm });
 generateKeys();
 
 connection.onopen = (session, details) => {
-  logs.info(`Connected to DAppNode's WAMP
+  logs.info(`Connected to WAMP
   url:     ${url}
   realm:   ${realm}
   session: ${(details || {}).authid}`);

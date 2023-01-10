@@ -3,7 +3,6 @@ const recoverSignature = require("../../utils/recoverSignature");
 
 const docker = {
   compose: {
-    quaak: "ok",
     // Usage: up [options] [--scale SERVICE=NUM...] [SERVICE...]
     // Options:
     // -d, --detach               Detached mode: Run containers in the background.
