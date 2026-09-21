@@ -32,10 +32,11 @@ async function restartPatch(IMAGE_NAME = "") {
   );
   const PATH_LOCAL = "/usr/src/dappnode/DNCORE/docker-compose-dappmanager.yml";
   const PATH_REMOTE = "/usr/src/app/DNCORE/docker-compose-dappmanager.yml";
-  const DOCKERCOMPOSE_DATA = `services:
+  const DOCKERCOMPOSE_DATA = `version: '3.4'
+
+services:
     restart.dnp.dappnode.eth:
         image: ${IMAGE_NAME}
-        pull_policy: never
         container_name: DAppNodeTool-restart.dnp.dappnode.eth
         volumes:
             - '${PATH_LOCAL}:${PATH_REMOTE}'

@@ -36,10 +36,11 @@ describe("Util: restartPatch", () => {
   it("Should generate a the correct docker-compose restart", () => {
     const dc = fs.readFileSync(DOCKERCOMPOSE_RESTART_PATH, "utf8");
 
-    const expectedDc = `services:
+    const expectedDc = `version: '3.4'
+
+services:
     restart.dnp.dappnode.eth:
         image: dappmanager.tar.xz:0.0.9
-        pull_policy: never
         container_name: DAppNodeTool-restart.dnp.dappnode.eth
         volumes:
             - '/usr/src/dappnode/DNCORE/docker-compose-dappmanager.yml:/usr/src/app/DNCORE/docker-compose-dappmanager.yml'

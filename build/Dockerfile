@@ -1,6 +1,12 @@
-FROM --platform=linux/amd64 node:20-alpine AS build
+# Debian (glibc) base on purpose. restartPatch recreates the DAPPMANAGER by
+# running the HOST's docker-compose, a glibc binary, inside a container of this
+# image. On Alpine that binary cannot run (the glibc compat packages no longer
+# work on current Alpine), so the DAPPMANAGER could not update itself.
+FROM --platform=linux/amd64 node:20-bookworm-slim AS build
 
-RUN apk add --no-cache git python3 build-base bind-tools docker bash jq
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git python3 build-essential jq ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/app
 
@@ -18,37 +24,32 @@ COPY dappnode_package.json .
 RUN ./getVersionData.sh
 
 # This results in a single layer image
-FROM --platform=linux/amd64 node:20-alpine
+FROM --platform=linux/amd64 node:20-bookworm-slim
 
-ENV DOCKER_COMPOSE_VERSION v2.24.0
+# Same API version as the Docker 20.10 engines updateAvadoHost.sh installs
 ENV DOCKER_API_VERSION 1.41
+ENV DOCKER_CLI_VERSION 20.10.24
+ENV DOCKER_COMPOSE_VERSION 1.29.2
+ENV DOCKER_COMPOSE_SHA256 f3f10cf3dbb8107e9ba2ea5f23c1d2159ff7321d16f0a23051d68d8e2547b323
 
-RUN apk add --no-cache curl bind-dev xz libltdl miniupnpc docker-cli-compose
+# procps: free (getStats), bind9-dnsutils: nsupdate (dns_updater),
+# miniupnpc: upnpc, xz-utils: package images, cron: dns_updater every minute
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      curl ca-certificates xz-utils miniupnpc bind9-dnsutils cron procps && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install glibc for compatibility (some binaries may need it)
-RUN apk add --no-cache --virtual=.build-dependencies wget ca-certificates && \
-    wget -q -O /etc/apk/keys/sgerrand.rsa.pub https://alpine-pkgs.sgerrand.com/sgerrand.rsa.pub && \
-    wget -q https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.35-r1/glibc-2.35-r1.apk && \
-    wget -q https://github.com/sgerrand/alpine-pkg-glibc/releases/download/2.35-r1/glibc-bin-2.35-r1.apk && \
-    apk add --no-cache --force-overwrite glibc-2.35-r1.apk glibc-bin-2.35-r1.apk && \
-    rm -f /etc/apk/keys/sgerrand.rsa.pub glibc-2.35-r1.apk glibc-bin-2.35-r1.apk && \
-    apk del .build-dependencies || true
-
-# glibc-bin pulls in gcompat, whose musl-based /lib/ld-linux-x86-64.so.2 then
-# loads glibc binaries and fails. restartPatch runs the host's glibc
-# docker-compose inside this image to recreate the DAPPMANAGER, so the loader
-# must be the real one. The check fails the build instead of shipping an image
-# that cannot update itself.
-RUN ln -sf /usr/glibc-compat/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2 && \
-    mkdir -p /lib64 && \
-    ln -sf /usr/glibc-compat/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 && \
-    /lib64/ld-linux-x86-64.so.2 --version | grep -q "GNU libc"
-
-# Create docker-compose wrapper script that calls "docker compose"
-RUN echo '#!/bin/sh' > /usr/local/bin/docker-compose && \
-    echo 'exec docker compose "$@"' >> /usr/local/bin/docker-compose && \
-    chmod +x /usr/local/bin/docker-compose
-
+# Docker CLI and docker-compose, both pinned. Compose stays on v1: it is what
+# every installed package was created with (1.20.1 up to 10.0.45) and what the
+# host runs, so container, network and volume handling does not change.
+RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz \
+      | tar -xz -C /tmp docker/docker && \
+    mv /tmp/docker/docker /usr/bin/docker && rm -rf /tmp/docker && \
+    curl -fsSL -o /usr/local/bin/docker-compose \
+      https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-Linux-x86_64 && \
+    echo "${DOCKER_COMPOSE_SHA256}  /usr/local/bin/docker-compose" | sha256sum -c - && \
+    chmod +x /usr/local/bin/docker-compose && \
+    docker --version && docker-compose version
 
 # Files for updating legacy Docker installations on the host
 # Debian Buster (10)
@@ -66,12 +67,10 @@ RUN chmod +x /update/updateAvadoHost.sh
 
 WORKDIR /usr/src/app
 
-COPY --from=build /usr/bin/nsupdate /usr/bin/nsupdate
-COPY --from=build /usr/bin/docker /usr/bin/docker
-
 COPY build/entrypoint.sh .
 COPY build/dns_updater.sh /etc/periodic/1min/dns_updater
-RUN crontab -l | { cat; echo "*       *       *       *       *       run-parts   /etc/periodic/1min"; } | crontab -
+RUN chmod +x /etc/periodic/1min/dns_updater && \
+    echo "* * * * * run-parts /etc/periodic/1min" | crontab -
 
 ENV DB_PATH /usr/src/app/DNCORE/dappmanagerdb.json
 ENV FILE_PATH /usr/src/app/DNCORE/static
