@@ -153,7 +153,8 @@ describe("Util: package install / download", () => {
     // generateDockerComposeSpy - dnpManifest
     it("docker.compose.up should be called with DOCKERCOMPOSE_PATH", () => {
       expect(dockerComposeUpSpy.getCalls()[0].args).to.deep.equal([
-        DOCKERCOMPOSE_PATH
+        DOCKERCOMPOSE_PATH,
+        { timeout: 180 }
       ]);
     });
   });

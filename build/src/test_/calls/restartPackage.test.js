@@ -31,6 +31,7 @@ describe("Call function: restartPackage", function() {
         }
       },
       compose: {
+        stop: sinon.fake(),
         rm: sinon.fake()
       }
     };
@@ -40,7 +41,9 @@ describe("Call function: restartPackage", function() {
       params: params
     });
     let res = await restartPackage({ id: PACKAGE_NAME });
-    // sinon.assert.called(docker.compose.rm);
+    sinon.assert.calledWith(docker.compose.stop, DOCKERCOMPOSE_PATH, {
+      timeout: 180
+    });
     sinon.assert.calledWith(docker.compose.rm, DOCKERCOMPOSE_PATH);
     sinon.assert.calledWith(docker.safe.compose.up, DOCKERCOMPOSE_PATH);
     expect(res).to.be.ok;

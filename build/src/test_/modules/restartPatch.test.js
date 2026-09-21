@@ -24,24 +24,22 @@ describe("Util: restartPatch", () => {
   );
 
   const restartPatch = proxyquire("modules/restartPatch", {
-    docker: docker,
+    "modules/docker": docker,
     params: params
   });
 
-  it("Should call docker.compose.up with the correct arguments", () => {
-    restartPatch(IMAGE_NAME).then(() => {
-      expect(dockerComposeUpArg).to.be.equal(DOCKERCOMPOSE_RESTART_PATH);
-    });
+  it("Should call docker.compose.up with the correct arguments", async () => {
+    await restartPatch(IMAGE_NAME);
+    expect(dockerComposeUpArg).to.be.equal(DOCKERCOMPOSE_RESTART_PATH);
   });
 
   it("Should generate a the correct docker-compose restart", () => {
     const dc = fs.readFileSync(DOCKERCOMPOSE_RESTART_PATH, "utf8");
 
-    const expectedDc = `version: '3.4'
-
-services:
+    const expectedDc = `services:
     restart.dnp.dappnode.eth:
         image: dappmanager.tar.xz:0.0.9
+        pull_policy: never
         container_name: DAppNodeTool-restart.dnp.dappnode.eth
         volumes:
             - '/usr/src/dappnode/DNCORE/docker-compose-dappmanager.yml:/usr/src/app/DNCORE/docker-compose-dappmanager.yml'

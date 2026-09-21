@@ -17,3 +17,6 @@ build/src/test_files/*
 
 # Version data file
 .version.json
+
+# Release artifacts
+build_*/
