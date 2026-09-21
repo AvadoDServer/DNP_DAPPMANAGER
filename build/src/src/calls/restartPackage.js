@@ -18,8 +18,16 @@ const restartPackage = async ({ id, timeout = 180 }) => {
     throw Error(`No docker-compose found: ${dockerComposePath}`);
   }
 
+  // The DAPPMANAGER cannot stop itself: compose stop would kill this process
+  // before rm and up run, and a container stopped on purpose is not brought
+  // back by "restart: always". The restart container recreates it instead.
   if (id.includes("dappmanager.dnp.dappnode.eth")) {
     await restartPatch(id);
+    return {
+      message: `Restarting package: ${id}`,
+      logMessage: true,
+      userAction: true
+    };
   }
 
   // Combining rm && up doesn't prevent the installer from crashing

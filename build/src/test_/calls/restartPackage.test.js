@@ -50,6 +50,33 @@ describe("Call function: restartPackage", function() {
     expect(res).to.have.property("message");
   });
 
+  it("should hand the DAPPMANAGER to the restart container and never stop it", async () => {
+    const id = "dappmanager.dnp.dappnode.eth";
+    const dappmanagerComposePath = getPath.dockerCompose(id, params, true);
+    validate.path(dappmanagerComposePath);
+    fs.writeFileSync(dappmanagerComposePath, "docker-compose");
+
+    const docker = {
+      safe: { compose: { up: sinon.fake() } },
+      compose: { stop: sinon.fake(), rm: sinon.fake() }
+    };
+    const restartPatch = sinon.fake();
+    const restartPackage = proxyquire("calls/restartPackage", {
+      "modules/docker": docker,
+      "modules/restartPatch": restartPatch,
+      params: params
+    });
+    const res = await restartPackage({ id });
+    fs.unlinkSync(dappmanagerComposePath);
+
+    sinon.assert.calledOnce(restartPatch);
+    sinon.assert.calledWith(restartPatch, id);
+    sinon.assert.notCalled(docker.compose.stop);
+    sinon.assert.notCalled(docker.compose.rm);
+    sinon.assert.notCalled(docker.safe.compose.up);
+    expect(res).to.have.property("message");
+  });
+
   after(() => {
     fs.unlinkSync(DOCKERCOMPOSE_PATH);
   });
