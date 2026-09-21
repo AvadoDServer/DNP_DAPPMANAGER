@@ -12,6 +12,14 @@ const upnpc = require("./modules/upnpc");
 const { stringIncludes } = require("utils/strings");
 const express = require('express');
 
+// Node 10 only warned about a rejected promise nobody awaited; since Node 15 it
+// terminates the process. This code base has fire-and-forget promises
+// (rebootHost, watchers), so keep the old behaviour: log it and carry on,
+// instead of dying in the middle of an install.
+process.on("unhandledRejection", reason => {
+  logs.error(`Unhandled promise rejection: ${(reason && reason.stack) || reason}`);
+});
+
 // import calls
 const calls = require("./calls");
 const generateKeys = require("./utils/generateKeys");
