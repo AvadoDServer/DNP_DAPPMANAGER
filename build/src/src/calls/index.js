@@ -39,4 +39,5 @@ module.exports = {
   getParams: require("./getParams"),
   setName: require("./setName"),
   createJWT: require("./createJWT"),
+  signPrioritySupportRequest: require("./signPrioritySupportRequest"),
 };
