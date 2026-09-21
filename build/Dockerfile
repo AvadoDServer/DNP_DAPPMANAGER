@@ -34,6 +34,16 @@ RUN apk add --no-cache --virtual=.build-dependencies wget ca-certificates && \
     rm -f /etc/apk/keys/sgerrand.rsa.pub glibc-2.35-r1.apk glibc-bin-2.35-r1.apk && \
     apk del .build-dependencies || true
 
+# glibc-bin pulls in gcompat, whose musl-based /lib/ld-linux-x86-64.so.2 then
+# loads glibc binaries and fails. restartPatch runs the host's glibc
+# docker-compose inside this image to recreate the DAPPMANAGER, so the loader
+# must be the real one. The check fails the build instead of shipping an image
+# that cannot update itself.
+RUN ln -sf /usr/glibc-compat/lib/ld-linux-x86-64.so.2 /lib/ld-linux-x86-64.so.2 && \
+    mkdir -p /lib64 && \
+    ln -sf /usr/glibc-compat/lib/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 && \
+    /lib64/ld-linux-x86-64.so.2 --version | grep -q "GNU libc"
+
 # Create docker-compose wrapper script that calls "docker compose"
 RUN echo '#!/bin/sh' > /usr/local/bin/docker-compose && \
     echo 'exec docker compose "$@"' >> /usr/local/bin/docker-compose && \
