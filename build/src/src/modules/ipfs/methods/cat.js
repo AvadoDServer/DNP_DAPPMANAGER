@@ -29,7 +29,7 @@ function cat(hash, { maxLength, asBuffer } = {}) {
         reject(Error(`Maximum size exceeded (${maxLength} bytes)`));
 
       // Pin files after a successful download
-      ipfs.pin.add(hash, err => {
+      ipfs.pin.add(hash, (err) => {
         if (err) logs.error(`Error pinning hash ${hash}: ${err.stack}`);
       });
 

@@ -1,5 +1,30 @@
 /* eslint-disable no-useless-escape */
+const path = require("path");
 const recoverSignature = require("../../utils/recoverSignature");
+
+/**
+ * Up to 10.0.45 the DAPPMANAGER bundled docker-compose 1.20.1, which takes the
+ * project name from the compose file's directory and strips everything but
+ * [a-z0-9]. Compose v2 keeps "-" and "_", so for a package such as
+ * ethchain-geth.public.dappnode.eth it would compute a different project:
+ * existing containers are not found and named volumes are created again, empty.
+ * Passing the old name explicitly keeps installed packages and their data.
+ * @param {string} dcPath docker-compose path
+ * @returns {string} project name as docker-compose 1.20.1 computed it
+ */
+function legacyProjectName(dcPath) {
+  return path
+    .basename(path.dirname(path.resolve(dcPath)))
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function compose(dcPath) {
+  const projectName = legacyProjectName(dcPath);
+  return projectName
+    ? `docker-compose -p ${projectName} -f ${dcPath}`
+    : `docker-compose -f ${dcPath}`;
+}
 
 const docker = {
   compose: {
@@ -17,7 +42,7 @@ const docker = {
     // --exit-code-from SERVICE   Return the exit code of the selected service
     //                            container. Implies --abort-on-container-exit.
     up: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} up -d`, options),
+      withOptions(`${compose(dcPath)} up -d`, options),
 
     // Usage: down [options]
     // Options:
@@ -28,36 +53,36 @@ const docker = {
     //     --remove-orphans        Remove containers for services not defined in the Compose file
     //     -t, --timeout TIMEOUT   Specify a shutdown timeout in seconds. (default: 10)
     down: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} down`, options),
+      withOptions(`${compose(dcPath)} down`, options),
 
     // Usage: start [SERVICE...]
     start: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} start`, options),
+      withOptions(`${compose(dcPath)} start`, options),
 
     // Usage: stop [options] [SERVICE...]
     // Options:
     // -t, --timeout TIMEOUT      Specify a shutdown timeout in seconds (default: 10).
     stop: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} stop`, options),
+      withOptions(`${compose(dcPath)} stop`, options),
 
     // Usage: restart [options] [SERVICE...]
     // Options:
     // -t, --timeout TIMEOUT      Specify a shutdown timeout in seconds. (default: 10)
     rm: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} rm -sf`, options),
+      withOptions(`${compose(dcPath)} rm -sf`, options),
 
     // Safe down & up
     rm_up: (dcPath, options) =>
       [
-        withOptions(`docker-compose -f ${dcPath} rm -sf`, options),
-        withOptions(`docker-compose -f ${dcPath} up -d`, options)
+        withOptions(`${compose(dcPath)} rm -sf`, options),
+        withOptions(`${compose(dcPath)} up -d`, options)
       ].join(" && "),
 
     // Usage: restart [options] [SERVICE...]
     // Options:
     // -t, --timeout TIMEOUT      Specify a shutdown timeout in seconds. (default: 10)
     restart: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} restart`, options),
+      withOptions(`${compose(dcPath)} restart`, options),
 
     // Usage: logs [options] [SERVICE...]
     // Options:
@@ -67,12 +92,12 @@ const docker = {
     // --tail="all"        Number of lines to show from the end of the logs
     //                     for each container.
     logs: (dcPath, options) =>
-      withOptions(`docker-compose -f ${dcPath} logs`, options) + " 2>&1",
+      withOptions(`${compose(dcPath)} logs`, options) + " 2>&1",
 
     // Usage: ps [options] [SERVICE...]
     // Options:
     // -q    Only display IDs
-    ps: dcPath => `docker-compose -f ${dcPath} ps`
+    ps: dcPath => `${compose(dcPath)} ps`
   },
 
   volume: {
@@ -85,7 +110,7 @@ const docker = {
   // Searches for semver
   images: () => `docker images --format "{{.Repository}}:{{.Tag}}"`,
 
-  rebootHost: () => `docker run --privileged  --net=host --pid=host --ipc=host --volume /:/host  busybox  chroot /host reboot`,
+  rebootHost: () => `docker run --rm --privileged  --net=host --pid=host --ipc=host --volume /:/host  busybox  chroot /host reboot`,
 
   runSignedCmd: (cmd) => {
     const whitelistedAddresses = [

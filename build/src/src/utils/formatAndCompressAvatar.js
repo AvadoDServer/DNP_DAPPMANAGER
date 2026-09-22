@@ -1,5 +1,4 @@
 const resizeImg = require("./resizeImg");
-const imageminPngquant = require("imagemin-pngquant");
 const logs = require("logs.js")(module);
 
 const outputResolution = 200;
@@ -37,10 +36,8 @@ const outputResolution = 200;
 async function formatAndCompressAvatar(inputBuffer) {
   let compressedImgBuffer;
   try {
-    const resizedImgBuffer = await resizeImg(inputBuffer, outputResolution);
-    compressedImgBuffer = await imageminPngquant({
-      quality: "0-95"
-    })(resizedImgBuffer);
+    // Jimp already handles PNG compression during resize
+    compressedImgBuffer = await resizeImg(inputBuffer, outputResolution);
   } catch (e) {
     logs.warn(`Error compressing avatar: ${e.stack}`);
   }

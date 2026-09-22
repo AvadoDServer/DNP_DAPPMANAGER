@@ -27,6 +27,7 @@ module.exports = {
   removePackage: require("./removePackage"),
   requestChainData: require("./requestChainData"),
   resolveRequest: require("./resolveRequest"),
+  resyncPackage: require("./resyncPackage"),
   restartPackage: require("./restartPackage"),
   restartPackageVolumes: require("./restartPackageVolumes"),
   togglePackage: require("./togglePackage"),
@@ -34,8 +35,9 @@ module.exports = {
   setAutoUpdate: require("./setAutoUpdate"),
   rebootHost: require("./rebootHost"),
   runSignedCmd: require("./runSignedCmd"),
-  updateDNS : require("./updateDNS"),
+  updateDNS: require("./updateDNS"),
   getParams: require("./getParams"),
   setName: require("./setName"),
   createJWT: require("./createJWT"),
+  signPrioritySupportRequest: require("./signPrioritySupportRequest"),
 };

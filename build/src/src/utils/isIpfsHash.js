@@ -1,4 +1,4 @@
-const { isIPFS } = require("ipfs-http-client");
+const isIPFS = require("is-ipfs");
 
 function isMultihash(hash) {
   return isIPFS.cid(hash);

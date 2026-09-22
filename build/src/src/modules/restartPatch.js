@@ -1,7 +1,7 @@
 const fs = require("fs");
 const getPath = require("utils/getPath");
 const validate = require("utils/validate");
-const dockerList = require("modules/dockerList");
+const parse = require("utils/parse");
 const docker = require("modules/docker");
 const params = require("params");
 
@@ -19,10 +19,16 @@ const params = require("params");
 
 async function restartPatch(IMAGE_NAME = "") {
   if (!IMAGE_NAME.includes(":")) {
-    let dnpList = await dockerList.listContainers();
-    let container = dnpList.find(c => (c.name || "").includes(IMAGE_NAME));
-    let version = container.version;
-    IMAGE_NAME += ":" + version;
+    // Use the image the DAPPMANAGER compose file names: it is what the restart
+    // container will bring up anyway. The running container's tag is not
+    // reliable, docker reports a digest once the tag points at another image,
+    // and compose would then hang on an interactive pull prompt.
+    const dappmanagerCompose = getPath.dockerCompose(
+      "dappmanager.dnp.dappnode.eth",
+      params,
+      true
+    );
+    IMAGE_NAME = parse.getUniqueDockerComposeService(dappmanagerCompose).image;
   }
 
   const DOCKERCOMPOSE_RESTART_PATH = getPath.dockerCompose(
@@ -43,7 +49,7 @@ services:
             - '/usr/local/bin/docker-compose:/usr/local/bin/docker-compose'
             - '/var/run/docker.sock:/var/run/docker.sock'
         entrypoint:
-            docker-compose -f ${PATH_REMOTE} up -d`;
+            docker-compose -f ${PATH_REMOTE} up -d --force-recreate`;
 
   validate.path(DOCKERCOMPOSE_RESTART_PATH);
   await fs.writeFileSync(DOCKERCOMPOSE_RESTART_PATH, DOCKERCOMPOSE_DATA);

@@ -19,7 +19,12 @@ const defaultTimeout = 15 * 60 * 1000; // ms
 function shell(cmd, _options) {
   const options = typeof _options === "object" ? _options : {};
   const timeout = options.timeout || defaultTimeout;
-  return exec(cmd, { timeout })
+  const promise = exec(cmd, { timeout });
+  // Nothing here answers questions. docker-compose asks "[yN]" before
+  // recreating a service whose image is gone and would wait for the answer
+  // until the timeout; with stdin closed it fails at once instead.
+  if (promise.child && promise.child.stdin) promise.child.stdin.end();
+  return promise
     .then(res => (res.stdout || "").trim())
     .catch(err => {
       if (err.signal === "SIGTERM") {

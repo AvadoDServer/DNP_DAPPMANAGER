@@ -84,14 +84,28 @@ describe("dappGet integration test", () => {
           }
         };
 
-        const dappGet = proxyquire("modules/dappGet", {
-          "./fetch": fetch,
-          "modules/dockerList": dockerList
-        });
-
         const aggregate = proxyquire("modules/dappGet/aggregate", {
           "modules/dockerList": dockerList
         });
+        const resolve = require("modules/dappGet/resolve");
+
+        // The full aggregate + resolve pipeline. dappGet itself only resolves
+        // first-level dependencies (see basic.js); these cases keep the
+        // resolver modules honest for when the full pipeline is used.
+        async function dappGet(req) {
+          const dnpList = await dockerList.listContainers();
+          const dnps = await aggregate({ req, dnpList, fetch });
+          const { success, message, state } = resolve(dnps);
+          if (!success) throw Error(`Could not find compatible state. ${message}`);
+          const alreadyUpdated = {};
+          dnpList.forEach(dnp => {
+            if (state[dnp.name] && state[dnp.name] === dnp.version) {
+              alreadyUpdated[dnp.name] = state[dnp.name];
+              delete state[dnp.name];
+            }
+          });
+          return { message, state, alreadyUpdated };
+        }
 
         it("Agreggate dnps for the integration test", async () => {
           const dnps = await aggregate({ req: _case.req, fetch });

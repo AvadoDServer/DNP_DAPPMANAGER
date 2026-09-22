@@ -1,4 +1,3 @@
-version: '3.4'
 networks:
   network:
     driver: bridge
@@ -12,7 +11,7 @@ services:
     build:
       context: .
       dockerfile: ./build/Dockerfile
-    image: 'dappmanager.dnp.dappnode.eth:10.0.45'
+    image: 'dappmanager.dnp.dappnode.eth:10.0.47'
     container_name: DAppNodeCore-dappmanager.dnp.dappnode.eth
     restart: always
     volumes:

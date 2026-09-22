@@ -13,6 +13,11 @@ const { eventBus, eventBusTag } = require("eventBus");
 const togglePackage = async ({ id, timeout = 180 }) => {
   if (!id) throw Error("kwarg id must be defined");
 
+  // A stopped DAPPMANAGER cannot start itself again
+  if (id.includes("dappmanager.dnp.dappnode.eth")) {
+    throw Error("The installer cannot be paused");
+  }
+
   const dockerComposePath = getPath.dockerComposeSmart(id, params);
   // This parse utility already throws if no docker-compose found
   let containerName = parse.containerName(dockerComposePath);

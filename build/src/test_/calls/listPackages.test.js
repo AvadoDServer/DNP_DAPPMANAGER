@@ -20,8 +20,11 @@ function mockTest() {
       name: "test.dnp.dappnode.eth"
     }
   ];
-  // Result should extend the package list with the env variables
-  let expectedResult = [Object.assign({ envs }, mockList[0])];
+  // Result should extend the package list with the env variables and the
+  // autoupdate flag (default true when nothing is stored)
+  let expectedResult = [
+    Object.assign({ envs, manifest: { autoupdate: true } }, mockList[0])
+  ];
 
   // Mock docker calls
   const dockerCalls = {
@@ -38,8 +41,18 @@ function mockTest() {
   };
 
   // initialize call
+  // Volume info comes from a real `docker system df`; not in a unit test
+  const docker = {
+    systemDf: async () => {
+      throw Error("docker not available in unit tests");
+    }
+  };
+  const db = { get: async () => undefined };
+
   const listPackages = proxyquire("calls/listPackages", {
     "modules/dockerList": dockerCalls,
+    "modules/docker": docker,
+    "../db": db,
     params: params
   });
 

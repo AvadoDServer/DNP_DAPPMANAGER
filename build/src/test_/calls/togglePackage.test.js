@@ -62,6 +62,16 @@ function mockTest() {
     expect(error).to.include("docker-compose does not exist");
   });
 
+  it("should refuse to pause the DAPPMANAGER", async () => {
+    let error = "--- togglePackage did not throw ---";
+    try {
+      await togglePackage({ id: "dappmanager.dnp.dappnode.eth" });
+    } catch (e) {
+      error = e.message;
+    }
+    expect(error).to.include("cannot be paused");
+  });
+
   after(() => {
     fs.unlinkSync(DOCKERCOMPOSE_PATH);
   });

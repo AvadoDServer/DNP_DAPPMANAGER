@@ -3,11 +3,12 @@ const logs = require("logs.js")(module);
 const fs = require('fs');
 const axios = require('axios');
 const path = require('path');
-const x509 = require('x509');
+const crypto = require('crypto');
 const filePath = process.env.FILE_PATH;
 
 const checkCert = (filename, crt_pem) => {
-    const { notAfter } = x509.parseCert(crt_pem);
+    const cert = new crypto.X509Certificate(crt_pem);
+    const notAfter = cert.validTo;
     const diff = (new Date(notAfter)) - Date.now();
     if (diff > 24 * 60 * 60 * 1000) {
         logs.info(`Certificate ${filename} valid until ${notAfter}`);

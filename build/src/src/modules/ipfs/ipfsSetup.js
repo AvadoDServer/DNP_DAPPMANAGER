@@ -1,4 +1,4 @@
-const ipfsAPI = require("ipfs-http-client");
+const ipfsClient = require("ipfs-http-client");
 const params = require("params");
 const logs = require("logs.js")(module);
 
@@ -25,7 +25,7 @@ function initIPFS() {
   // }
   const IPFS_HOST = params.IPFS;
   logs.info(`Attempting IPFS connection to : ${IPFS_HOST}`);
-  const ipfs = ipfsAPI(IPFS_HOST, "5001", { protocol: "http" });
+  const ipfs = ipfsClient(IPFS_HOST, "5001", { protocol: "http" });
   // verify on the background, don't stop execution
   verifyIPFS(ipfs);
   return ipfs;

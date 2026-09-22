@@ -28,19 +28,19 @@ function catStreamToFs(hash, path, options = {}) {
       reject(Error(timeoutError));
     }, params.IPFS_TIMEOUT);
 
-    const onError = streamId => err => {
+    const onError = (streamId) => (err) => {
       clearTimeout(timeoutToCancel);
       reject(Error(streamId + ": " + err));
     };
 
-    const onData = chunk => {
+    const onData = (chunk) => {
       clearTimeout(timeoutToCancel);
       if (options.onChunk) options.onChunk(chunk);
     };
 
-    const onFinish = data => {
+    const onFinish = (data) => {
       // Pin files after a successful download
-      ipfs.pin.add(hash, err => {
+      ipfs.pin.add(hash, (err) => {
         if (err) logs.error(`Error pinning hash ${hash}: ${err.stack}`);
       });
       resolve(data);

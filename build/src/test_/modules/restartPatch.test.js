@@ -24,14 +24,36 @@ describe("Util: restartPatch", () => {
   );
 
   const restartPatch = proxyquire("modules/restartPatch", {
-    docker: docker,
+    "modules/docker": docker,
     params: params
   });
 
-  it("Should call docker.compose.up with the correct arguments", () => {
-    restartPatch(IMAGE_NAME).then(() => {
-      expect(dockerComposeUpArg).to.be.equal(DOCKERCOMPOSE_RESTART_PATH);
-    });
+  it("Should call docker.compose.up with the correct arguments", async () => {
+    await restartPatch(IMAGE_NAME);
+    expect(dockerComposeUpArg).to.be.equal(DOCKERCOMPOSE_RESTART_PATH);
+  });
+
+  it("Should take the image from the DAPPMANAGER compose when no version is given", async () => {
+    const dappmanagerComposePath = getPath.dockerCompose(
+      "dappmanager.dnp.dappnode.eth",
+      params,
+      true
+    );
+    fs.writeFileSync(
+      dappmanagerComposePath,
+      `version: '3.4'
+services:
+    dappmanager.dnp.dappnode.eth:
+        image: 'dappmanager.dnp.dappnode.eth:10.0.47'
+        container_name: DAppNodeCore-dappmanager.dnp.dappnode.eth
+`
+    );
+    await restartPatch("dappmanager.dnp.dappnode.eth");
+    fs.unlinkSync(dappmanagerComposePath);
+    const dc = fs.readFileSync(DOCKERCOMPOSE_RESTART_PATH, "utf8");
+    expect(dc).to.include("image: dappmanager.dnp.dappnode.eth:10.0.47");
+    // Leave the file as the next test expects it
+    await restartPatch(IMAGE_NAME);
   });
 
   it("Should generate a the correct docker-compose restart", () => {
@@ -48,7 +70,7 @@ services:
             - '/usr/local/bin/docker-compose:/usr/local/bin/docker-compose'
             - '/var/run/docker.sock:/var/run/docker.sock'
         entrypoint:
-            docker-compose -f /usr/src/app/DNCORE/docker-compose-dappmanager.yml up -d`;
+            docker-compose -f /usr/src/app/DNCORE/docker-compose-dappmanager.yml up -d --force-recreate`;
 
     expect(dc).to.equal(expectedDc);
     fs.unlinkSync(DOCKERCOMPOSE_RESTART_PATH);

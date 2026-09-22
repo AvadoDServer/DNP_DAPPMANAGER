@@ -163,6 +163,7 @@ module.exports = {
   stringifyDockerCompose,
   readDockerCompose,
   writeDockerCompose,
+  getUniqueDockerComposeService,
   serviceVolumes,
   containerName,
   dockerComposePorts,
