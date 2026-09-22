@@ -145,7 +145,13 @@ const installPackage = async ({
   const isDappmanager = pkg =>
     stringIncludes((pkg.manifest || {}).name, "dappmanager.dnp.dappnode.eth");
 
-  for (const pkg of pkgs.sort(pkg => (isDappmanager(pkg) ? 1 : -1))) {
+  // Run the DAPPMANAGER last (it restarts itself), keep the order otherwise.
+  // A one-argument comparator gave engine-dependent results: on Node 20 it
+  // reversed the list.
+  const runOrder = [...pkgs].sort(
+    (a, b) => Number(isDappmanager(a)) - Number(isDappmanager(b))
+  );
+  for (const pkg of runOrder) {
     // 5. Set ENVs. Set userSetEnvs + the manifest defaults (if not previously set)
     const { name, isCore } = pkg.manifest;
     const defaultEnvs = envsHelper.getManifestEnvs(pkg.manifest) || {};
