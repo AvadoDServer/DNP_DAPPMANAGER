@@ -33,6 +33,29 @@ describe("Util: restartPatch", () => {
     expect(dockerComposeUpArg).to.be.equal(DOCKERCOMPOSE_RESTART_PATH);
   });
 
+  it("Should take the image from the DAPPMANAGER compose when no version is given", async () => {
+    const dappmanagerComposePath = getPath.dockerCompose(
+      "dappmanager.dnp.dappnode.eth",
+      params,
+      true
+    );
+    fs.writeFileSync(
+      dappmanagerComposePath,
+      `version: '3.4'
+services:
+    dappmanager.dnp.dappnode.eth:
+        image: 'dappmanager.dnp.dappnode.eth:10.0.47'
+        container_name: DAppNodeCore-dappmanager.dnp.dappnode.eth
+`
+    );
+    await restartPatch("dappmanager.dnp.dappnode.eth");
+    fs.unlinkSync(dappmanagerComposePath);
+    const dc = fs.readFileSync(DOCKERCOMPOSE_RESTART_PATH, "utf8");
+    expect(dc).to.include("image: dappmanager.dnp.dappnode.eth:10.0.47");
+    // Leave the file as the next test expects it
+    await restartPatch(IMAGE_NAME);
+  });
+
   it("Should generate a the correct docker-compose restart", () => {
     const dc = fs.readFileSync(DOCKERCOMPOSE_RESTART_PATH, "utf8");
 
