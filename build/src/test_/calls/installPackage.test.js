@@ -202,3 +202,108 @@ describe("Call function: installPackage", function() {
   //     expect(error).to.include('No docker-compose found');
   // });
 });
+
+// The auto-updater passes KEEP_STOPPED: an update must not start a package the
+// user stopped (docker-compose up would), dependencies included
+describe("Call function: installPackage, KEEP_STOPPED", function() {
+  const pkgName = "dapp.dnp.dappnode.eth";
+  const depName = "teku.avado.dnp.dappnode.eth";
+  const ver = "0.1.1";
+
+  let containers; // what docker reports as installed
+  let onDownload; // runs during the download, e.g. the user pauses a package
+
+  const packages = {
+    download: sinon.stub().callsFake(async () => onDownload()),
+    run: sinon.stub().resolves()
+  };
+  const dappGet = async () => ({
+    state: { [pkgName]: ver, [depName]: ver }
+  });
+  const getManifest = async ({ name }) => ({ name, type: "service" });
+  const dockerList = { listContainers: async () => containers };
+  const envsHelper = {
+    getManifestEnvs: () => ({}),
+    load: () => ({}),
+    write: () => {}
+  };
+
+  const installPackage = proxyquire("calls/installPackage", {
+    "modules/packages": packages,
+    "modules/dappGet": dappGet,
+    "modules/getManifest": getManifest,
+    "modules/dockerList": dockerList,
+    "modules/lockPorts": async () => [],
+    "utils/isSyncing": async () => false,
+    "utils/envsHelper": envsHelper,
+    "utils/logUi": () => {},
+    "./updateDNS": async () => ({}),
+    eventBus: { eventBus: { emit: () => {} }, eventBusTag },
+    db: { get: async () => false }
+  });
+
+  const container = (name, state, isCore = false) => ({ name, state, isCore });
+
+  beforeEach(() => {
+    packages.download.resetHistory();
+    packages.run.resetHistory();
+    onDownload = () => {};
+  });
+
+  async function installError(options) {
+    try {
+      await installPackage({ id: pkgName, options });
+    } catch (e) {
+      return e.message;
+    }
+    return null;
+  }
+
+  it("installs when the package and its dependency run", async () => {
+    containers = [
+      container(pkgName, "running"),
+      container(depName, "restarting")
+    ];
+    expect(await installError({ KEEP_STOPPED: true })).to.equal(null);
+    sinon.assert.callCount(packages.run, 2);
+  });
+
+  it("refuses before writing anything when a dependency is stopped", async () => {
+    containers = [container(pkgName, "running"), container(depName, "exited")];
+    expect(await installError({ KEEP_STOPPED: true })).to.include(
+      `Not starting stopped package ${depName} (exited)`
+    );
+    sinon.assert.notCalled(packages.download);
+    sinon.assert.notCalled(packages.run);
+  });
+
+  it("refuses to run when the user stops a package during the download", async () => {
+    containers = [container(pkgName, "running"), container(depName, "running")];
+    onDownload = () => {
+      containers = [
+        container(pkgName, "exited"),
+        container(depName, "running")
+      ];
+    };
+    expect(await installError({ KEEP_STOPPED: true })).to.include(
+      `Not starting stopped package ${pkgName} (exited)`
+    );
+    sinon.assert.called(packages.download);
+    sinon.assert.notCalled(packages.run);
+  });
+
+  it("installs a stopped core package", async () => {
+    containers = [
+      container(pkgName, "exited", true),
+      container(depName, "running")
+    ];
+    expect(await installError({ KEEP_STOPPED: true })).to.equal(null);
+    sinon.assert.callCount(packages.run, 2);
+  });
+
+  it("a manual update from the Admin (no KEEP_STOPPED) still installs a stopped package", async () => {
+    containers = [container(pkgName, "exited"), container(depName, "exited")];
+    expect(await installError({})).to.equal(null);
+    sinon.assert.callCount(packages.run, 2);
+  });
+});

@@ -7,6 +7,7 @@ const semver = require('semver');
 const db = require("../../db");
 const logs = require("logs.js")(module);
 const jayson = require('jayson');
+const isStoppedPackage = require("utils/isStoppedPackage");
 
 
 const rpcClient = new jayson.client.https({
@@ -54,6 +55,11 @@ const monitorUpdates = async () => {
                     const latestVersion = findLatestVersion(store, installedPackage.name);
                     // logs.info(`latestVersion of ${installedPackage.name} is ${JSON.stringify(latestVersion, null, 2)}`);
                     if (latestVersion && semver.gt(latestVersion.manifest.version, installedPackage.version)) {
+                        // The update would start it again: it waits for a manual update from the Admin
+                        if (isStoppedPackage(installedPackage)) {
+                            logs.info(`package ${installedPackage.name} has an update from ${installedPackage.version} -> ${latestVersion.manifest.version} but is stopped (state=${installedPackage.state}); not updating it automatically, it can be updated from the Admin`);
+                            return null;
+                        }
                         logs.info(`package ${installedPackage.name} requires an update from ${installedPackage.version} -> ${latestVersion.manifest.version}`);
                         return (`${installedPackage.name}@${latestVersion.hash}`);
                     } else {
@@ -76,7 +82,11 @@ const monitorUpdates = async () => {
                 logs.info(`packages to upgrade ${JSON.stringify(toUpgrade, null, 2)}`);
                 var item = toUpgrade[Math.floor(Math.random() * toUpgrade.length)];
                 logs.info(`package selected for update: update package ${item}`);
-                calls.installPackage({ id: item }).then(() => { logs.info(`installed package ${item}`) });
+                // KEEP_STOPPED: the installer checks again, dependencies included,
+                // in case the user stops a package while this update downloads
+                calls.installPackage({ id: item, options: { KEEP_STOPPED: true } })
+                    .then(() => { logs.info(`installed package ${item}`) })
+                    .catch((e) => { logs.info(`auto-update of ${item} did not run: ${e.message}`) });
             }
 
         } else {

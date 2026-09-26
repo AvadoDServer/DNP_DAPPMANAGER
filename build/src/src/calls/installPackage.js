@@ -4,6 +4,7 @@ const db = require("db");
 // Modules
 const packages = require("modules/packages");
 const dappGet = require("modules/dappGet");
+const dockerList = require("modules/dockerList");
 const getManifest = require("modules/getManifest");
 const lockPorts = require("modules/lockPorts");
 // Utils
@@ -12,6 +13,7 @@ const parse = require("utils/parse");
 const merge = require("utils/merge");
 const isIpfsRequest = require("utils/isIpfsRequest");
 const isSyncing = require("utils/isSyncing");
+const isStoppedPackage = require("utils/isStoppedPackage");
 const envsHelper = require("utils/envsHelper");
 const parseManifestPorts = require("utils/parseManifestPorts");
 const { stringIncludes } = require("utils/strings");
@@ -50,6 +52,8 @@ const updateDNS = require("./updateDNS");
  * @param {object} options install options
  * - BYPASS_RESOLVER {bool}: Skips dappGet and just fetches first level dependencies
  * - BYPASS_CORE_RESTRICTION {bool}: Allows dncore DNPs from unverified sources (IPFS)
+ * - KEEP_STOPPED {bool}: Throws instead of starting a package the user stopped
+ *   (utils/isStoppedPackage), dependencies included. Set by the auto-updater.
  * options = { BYPASS_RESOLVER: true, BYPASS_CORE_RESTRICTION: true }
  */
 const installPackage = async ({
@@ -96,6 +100,9 @@ const installPackage = async ({
     `Resolved request ${id} ver ${req.ver}:\n ${JSON.stringify(state, null, 2)}`
   );
 
+  // Check before any file of the package is written
+  if (options.KEEP_STOPPED) await assertNotStopped(Object.keys(state));
+
   // 3. Format the request and filter out already updated packages
   Object.keys(alreadyUpdated || {}).forEach(name => {
     logUi({ id, name, message: "Already updated" });
@@ -140,6 +147,9 @@ const installPackage = async ({
   logs.info(
     `Successfully downloaded DNPs ${pkgs.map(({ name }) => name).join(", ")}`
   );
+
+  // Check again: the user may have stopped a package during the download
+  if (options.KEEP_STOPPED) await assertNotStopped(pkgs.map(pkg => pkg.name));
 
   // Patch, install the dappmanager the last always
   const isDappmanager = pkg =>
@@ -232,5 +242,24 @@ const installPackage = async ({
     userAction: true
   };
 };
+
+/**
+ * Throws if one of these packages is installed and stopped, before
+ * `docker-compose up` would start it again.
+ *
+ * @param {array} names DNP .eth names the install would run
+ */
+async function assertNotStopped(names) {
+  const installed = (await dockerList.listContainers()) || [];
+  const stopped = installed.filter(
+    dnp => names.includes(dnp.name) && isStoppedPackage(dnp)
+  );
+  if (stopped.length)
+    throw Error(
+      `Not starting stopped package ${stopped
+        .map(dnp => `${dnp.name} (${dnp.state})`)
+        .join(", ")}; update it from the Admin`
+    );
+}
 
 module.exports = installPackage;
