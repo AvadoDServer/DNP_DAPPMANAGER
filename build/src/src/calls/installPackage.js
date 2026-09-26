@@ -1,9 +1,12 @@
+const fs = require("fs");
 const { eventBus, eventBusTag } = require("eventBus");
 const logs = require("logs.js")(module);
 const db = require("db");
+const params = require("params");
 // Modules
 const packages = require("modules/packages");
 const dappGet = require("modules/dappGet");
+const dockerList = require("modules/dockerList");
 const getManifest = require("modules/getManifest");
 const lockPorts = require("modules/lockPorts");
 // Utils
@@ -12,6 +15,8 @@ const parse = require("utils/parse");
 const merge = require("utils/merge");
 const isIpfsRequest = require("utils/isIpfsRequest");
 const isSyncing = require("utils/isSyncing");
+const isStoppedPackage = require("utils/isStoppedPackage");
+const getPath = require("utils/getPath");
 const envsHelper = require("utils/envsHelper");
 const parseManifestPorts = require("utils/parseManifestPorts");
 const { stringIncludes } = require("utils/strings");
@@ -50,6 +55,9 @@ const updateDNS = require("./updateDNS");
  * @param {object} options install options
  * - BYPASS_RESOLVER {bool}: Skips dappGet and just fetches first level dependencies
  * - BYPASS_CORE_RESTRICTION {bool}: Allows dncore DNPs from unverified sources (IPFS)
+ * - KEEP_STOPPED {bool}: Throws instead of starting a package the user stopped
+ *   (utils/isStoppedPackage), dependencies included, and leaves the installed
+ *   version's files in place. Set by the auto-updater.
  * options = { BYPASS_RESOLVER: true, BYPASS_CORE_RESTRICTION: true }
  */
 const installPackage = async ({
@@ -96,6 +104,9 @@ const installPackage = async ({
     `Resolved request ${id} ver ${req.ver}:\n ${JSON.stringify(state, null, 2)}`
   );
 
+  // Check before any file of the package is written
+  if (options.KEEP_STOPPED) await assertNotStopped(Object.keys(state));
+
   // 3. Format the request and filter out already updated packages
   Object.keys(alreadyUpdated || {}).forEach(name => {
     logUi({ id, name, message: "Already updated" });
@@ -135,11 +146,27 @@ const installPackage = async ({
     `Processed manifests for: ${pkgs.map(({ name }) => name).join(", ")}`
   );
 
+  // The download writes each package's new manifest and docker-compose. Keep
+  // the current ones, to put them back if the check below refuses the update
+  const previousFiles = options.KEEP_STOPPED ? readPackageFiles(pkgs) : [];
+
   // 4. Download requested packages in paralel
   await Promise.all(pkgs.map(pkg => packages.download({ pkg, id })));
   logs.info(
     `Successfully downloaded DNPs ${pkgs.map(({ name }) => name).join(", ")}`
   );
+
+  // Check again: the user may have stopped a package during the download
+  if (options.KEEP_STOPPED) {
+    try {
+      await assertNotStopped(pkgs.map(pkg => pkg.name));
+    } catch (e) {
+      // Otherwise the next Restart in the Admin would start the new version
+      // without its envs and locked ports (steps 5 and 7 did not run)
+      writePackageFiles(previousFiles);
+      throw e;
+    }
+  }
 
   // Patch, install the dappmanager the last always
   const isDappmanager = pkg =>
@@ -232,5 +259,62 @@ const installPackage = async ({
     userAction: true
   };
 };
+
+/**
+ * Throws if one of these packages is installed and stopped, before
+ * `docker-compose up` would start it again.
+ *
+ * @param {array} names DNP .eth names the install would run
+ */
+async function assertNotStopped(names) {
+  const installed = (await dockerList.listContainers()) || [];
+  const stopped = names.filter(name => isStoppedPackage(name, installed));
+  const states = name =>
+    installed
+      .filter(dnp => dnp.name === name)
+      .map(dnp => dnp.state)
+      .join(", ");
+  if (stopped.length)
+    throw Error(
+      `Not starting stopped package ${stopped
+        .map(name => `${name} (${states(name)})`)
+        .join(", ")}; start it, or update from the Admin`
+    );
+}
+
+/**
+ * The manifest and docker-compose files of these packages that exist now
+ *
+ * @param {array} pkgs [{ manifest: { name, isCore } }]
+ * @returns {array} [{ path, data }]
+ */
+function readPackageFiles(pkgs) {
+  const files = [];
+  for (const { manifest } of pkgs) {
+    const { name, isCore } = manifest;
+    for (const path of [
+      getPath.manifest(name, params, isCore),
+      getPath.dockerCompose(name, params, isCore)
+    ])
+      if (fs.existsSync(path)) files.push({ path, data: fs.readFileSync(path) });
+  }
+  return files;
+}
+
+/**
+ * Writes back files read by readPackageFiles. Never throws: the caller is
+ * already reporting an error.
+ *
+ * @param {array} files [{ path, data }]
+ */
+function writePackageFiles(files) {
+  for (const { path, data } of files) {
+    try {
+      fs.writeFileSync(path, data);
+    } catch (e) {
+      logs.error(`Error restoring ${path}: ${e.stack}`);
+    }
+  }
+}
 
 module.exports = installPackage;
