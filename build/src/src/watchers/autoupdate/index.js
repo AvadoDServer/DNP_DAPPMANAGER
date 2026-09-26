@@ -55,9 +55,9 @@ const monitorUpdates = async () => {
                     const latestVersion = findLatestVersion(store, installedPackage.name);
                     // logs.info(`latestVersion of ${installedPackage.name} is ${JSON.stringify(latestVersion, null, 2)}`);
                     if (latestVersion && semver.gt(latestVersion.manifest.version, installedPackage.version)) {
-                        // The update would start it again: it waits for a manual update from the Admin
-                        if (isStoppedPackage(installedPackage)) {
-                            logs.info(`package ${installedPackage.name} has an update from ${installedPackage.version} -> ${latestVersion.manifest.version} but is stopped (state=${installedPackage.state}); not updating it automatically, it can be updated from the Admin`);
+                        // The update would start it again: it waits until the user starts it or updates it from the Admin
+                        if (isStoppedPackage(installedPackage.name, packageList)) {
+                            logs.info(`package ${installedPackage.name} has an update from ${installedPackage.version} -> ${latestVersion.manifest.version} but is stopped (state=${installedPackage.state}); not updating it automatically until it is started, it can be updated from the Admin`);
                             return null;
                         }
                         logs.info(`package ${installedPackage.name} requires an update from ${installedPackage.version} -> ${latestVersion.manifest.version}`);
@@ -86,7 +86,14 @@ const monitorUpdates = async () => {
                 // in case the user stops a package while this update downloads
                 calls.installPackage({ id: item, options: { KEEP_STOPPED: true } })
                     .then(() => { logs.info(`installed package ${item}`) })
-                    .catch((e) => { logs.info(`auto-update of ${item} did not run: ${e.message}`) });
+                    .catch((e) => {
+                        const message = (e && e.message) || String(e);
+                        if (/^Not starting stopped package/.test(message)) {
+                            logs.info(`auto-update of ${item} skipped: ${message}`);
+                        } else {
+                            logs.error(`auto-update of ${item} failed: ${(e && e.stack) || message}`);
+                        }
+                    });
             }
 
         } else {

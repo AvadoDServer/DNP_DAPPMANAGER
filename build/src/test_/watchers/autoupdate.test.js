@@ -12,6 +12,7 @@ describe("Watcher: autoupdate", () => {
   let installed = []; // what listPackages returns
   let store = { packages: [] }; // the store the watcher fetches from IPFS
   const logged = [];
+  const loggedErrors = [];
 
   const installPackage = sinon.stub();
   const calls = {
@@ -42,7 +43,7 @@ describe("Watcher: autoupdate", () => {
   const logs = () => ({
     info: msg => logged.push(msg),
     warn: () => {},
-    error: () => {},
+    error: msg => loggedErrors.push(msg),
     debug: () => {}
   });
   logs["@noCallThru"] = true;
@@ -72,17 +73,27 @@ describe("Watcher: autoupdate", () => {
     installPackage.reset();
     installPackage.resolves({});
     logged.length = 0;
+    loggedErrors.length = 0;
   });
 
   function pkg(name, state, extra = {}) {
     return {
       name,
+      packageName: `${extra.isCore ? "DAppNodeCore-" : "DAppNodePackage-"}${name}`,
       version: "0.0.1",
       state,
       isCore: false,
       manifest: { autoupdate: true },
       ...extra
     };
+  }
+
+  // The old container docker-compose 1.x leaves behind, renamed and exited,
+  // when the new container of an update fails
+  function leftover(name) {
+    return pkg(name, "exited", {
+      packageName: `2cdce2f4ef32_DAppNodePackage-${name}`
+    });
   }
 
   function storeHas(...names) {
@@ -131,11 +142,36 @@ describe("Watcher: autoupdate", () => {
     );
   });
 
-  it("skips a created but never started package", async () => {
+  it("updates a created package: an update whose container failed to start gets its fix", async () => {
     installed = [pkg(teku, "created")];
     storeHas(teku);
     await runWatcher();
-    sinon.assert.notCalled(installPackage);
+    sinon.assert.calledOnce(installPackage);
+    expect(installPackage.firstCall.args[0].id).to.equal(`${teku}@${newHash}`);
+  });
+
+  it("updates a package left created after a failed recreate (exited leftover + created)", async () => {
+    installed = [leftover(teku), pkg(teku, "created")];
+    storeHas(teku);
+    await runWatcher();
+    sinon.assert.called(installPackage);
+    for (const call of installPackage.getCalls())
+      expect(call.args[0].id).to.equal(`${teku}@${newHash}`);
+  });
+
+  it("updates a running package next to an exited leftover", async () => {
+    installed = [leftover(teku), pkg(teku, "running")];
+    storeHas(teku);
+    await runWatcher();
+    sinon.assert.called(installPackage);
+    expect(installPackage.firstCall.args[0].id).to.equal(`${teku}@${newHash}`);
+  });
+
+  it("updates a package whose only container is an exited leftover", async () => {
+    installed = [leftover(teku)];
+    storeHas(teku);
+    await runWatcher();
+    sinon.assert.calledOnce(installPackage);
   });
 
   it("updates a stopped core package", async () => {
@@ -157,14 +193,28 @@ describe("Watcher: autoupdate", () => {
       expect(call.args[0].id).to.equal(`${nimbus}@${newHash}`);
   });
 
-  it("logs an install the installer refused instead of leaving it unhandled", async () => {
+  it("logs an install the installer refused as skipped, instead of leaving it unhandled", async () => {
     installed = [pkg(teku, "running")];
     storeHas(teku);
     installPackage.rejects(Error(`Not starting stopped package ${teku}`));
     await runWatcher();
     sinon.assert.calledOnce(installPackage);
     expect(logged.join("\n")).to.include(
-      `auto-update of ${teku}@${newHash} did not run: Not starting stopped package ${teku}`
+      `auto-update of ${teku}@${newHash} skipped: Not starting stopped package ${teku}`
     );
+    expect(loggedErrors).to.deep.equal([]);
+  });
+
+  it("logs a failed install as an error, with its stack", async () => {
+    installed = [pkg(teku, "running")];
+    storeHas(teku);
+    installPackage.rejects(Error("Can't download teku image: timeout"));
+    await runWatcher();
+    sinon.assert.calledOnce(installPackage);
+    expect(loggedErrors).to.have.length(1);
+    expect(loggedErrors[0]).to.include(
+      `auto-update of ${teku}@${newHash} failed: Error: Can't download teku image: timeout`
+    );
+    expect(loggedErrors[0]).to.include("autoupdate.test.js"); // the stack
   });
 });

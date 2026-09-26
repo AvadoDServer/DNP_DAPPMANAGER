@@ -113,7 +113,7 @@ async function monitorDiskUsage() {
             threshold.id
           }. To prevent your DAppNode from becoming unusable ${
             threshold.containersDescription
-          } where stopped (${formatedNames}). Please, free up enough disk space and start them again.`
+          } where stopped (${formatedNames}). Please, free up enough disk space and start them again. Automatic updates of stopped apps wait until you start them.`
         });
         thresholdIsActive[threshold.id] = true;
 

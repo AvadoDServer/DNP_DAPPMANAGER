@@ -1,7 +1,11 @@
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const proxyquire = require("proxyquire");
 const expect = require("chai").expect;
 const sinon = require("sinon");
 const { eventBusTag } = require("eventBus");
+const getPath = require("utils/getPath");
 
 describe("Call function: installPackage", function() {
   const params = {
@@ -213,8 +217,33 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
   let containers; // what docker reports as installed
   let onDownload; // runs during the download, e.g. the user pauses a package
 
+  // The package repo, in a temp dir: packages.download writes the new version's
+  // manifest and docker-compose there before it loads the image
+  const params = {
+    CONTAINER_NAME_PREFIX: "DAppNodePackage-",
+    DNCORE_DIR: "DNCORE",
+    REPO_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "installPackage-test-"))
+  };
+  const packageFiles = name => [
+    getPath.manifest(name, params, false),
+    getPath.dockerCompose(name, params, false)
+  ];
+  const writeFiles = (name, data) => {
+    for (const file of packageFiles(name)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, data);
+    }
+  };
+  const readFiles = name =>
+    packageFiles(name).map(file =>
+      fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null
+    );
+
   const packages = {
-    download: sinon.stub().callsFake(async () => onDownload()),
+    download: sinon.stub().callsFake(async ({ pkg }) => {
+      writeFiles(pkg.name, `new version of ${pkg.name}`);
+      await onDownload();
+    }),
     run: sinon.stub().resolves()
   };
   const dappGet = async () => ({
@@ -239,15 +268,31 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
     "utils/logUi": () => {},
     "./updateDNS": async () => ({}),
     eventBus: { eventBus: { emit: () => {} }, eventBusTag },
-    db: { get: async () => false }
+    db: { get: async () => false },
+    params
   });
 
-  const container = (name, state, isCore = false) => ({ name, state, isCore });
+  const container = (name, state, isCore = false) => ({
+    name,
+    packageName: `${isCore ? "DAppNodeCore-" : "DAppNodePackage-"}${name}`,
+    state,
+    isCore
+  });
+  // docker-compose 1.x's renamed old container, left exited by a failed update
+  const leftover = name => ({
+    ...container(name, "exited"),
+    packageName: `2cdce2f4ef32_DAppNodePackage-${name}`
+  });
 
   beforeEach(() => {
     packages.download.resetHistory();
     packages.run.resetHistory();
     onDownload = () => {};
+    fs.rmSync(params.REPO_DIR, { recursive: true, force: true });
+  });
+
+  after(() => {
+    fs.rmSync(params.REPO_DIR, { recursive: true, force: true });
   });
 
   async function installError(options) {
@@ -277,19 +322,62 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
     sinon.assert.notCalled(packages.run);
   });
 
-  it("refuses to run when the user stops a package during the download", async () => {
+  it("refuses to run when the user stops a package during the download, and puts its files back", async () => {
     containers = [container(pkgName, "running"), container(depName, "running")];
+    writeFiles(pkgName, "installed version");
+    writeFiles(depName, "installed dependency");
     onDownload = () => {
       containers = [
         container(pkgName, "exited"),
         container(depName, "running")
       ];
     };
-    expect(await installError({ KEEP_STOPPED: true })).to.include(
-      `Not starting stopped package ${pkgName} (exited)`
+    expect(await installError({ KEEP_STOPPED: true })).to.equal(
+      `Not starting stopped package ${pkgName} (exited); start it, or update from the Admin`
     );
     sinon.assert.called(packages.download);
     sinon.assert.notCalled(packages.run);
+    // The installed version's manifest and docker-compose, not the new ones
+    expect(readFiles(pkgName)).to.deep.equal([
+      "installed version",
+      "installed version"
+    ]);
+    expect(readFiles(depName)).to.deep.equal([
+      "installed dependency",
+      "installed dependency"
+    ]);
+  });
+
+  it("keeps the new files when the update runs", async () => {
+    containers = [container(pkgName, "running"), container(depName, "running")];
+    writeFiles(pkgName, "installed version");
+    expect(await installError({ KEEP_STOPPED: true })).to.equal(null);
+    expect(readFiles(pkgName)).to.deep.equal([
+      `new version of ${pkgName}`,
+      `new version of ${pkgName}`
+    ]);
+  });
+
+  it("installs a package left created by an update whose container failed to start", async () => {
+    containers = [
+      leftover(pkgName),
+      container(pkgName, "created"),
+      container(depName, "running")
+    ];
+    expect(await installError({ KEEP_STOPPED: true })).to.equal(null);
+    sinon.assert.callCount(packages.run, 2);
+  });
+
+  it("refuses a paused package even next to an exited leftover", async () => {
+    containers = [
+      leftover(pkgName),
+      container(pkgName, "exited"),
+      container(depName, "running")
+    ];
+    expect(await installError({ KEEP_STOPPED: true })).to.include(
+      `Not starting stopped package ${pkgName} (exited, exited)`
+    );
+    sinon.assert.notCalled(packages.download);
   });
 
   it("installs a stopped core package", async () => {
