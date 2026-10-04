@@ -27,6 +27,7 @@ module.exports = {
   removePackage: require("./removePackage"),
   requestChainData: require("./requestChainData"),
   resolveRequest: require("./resolveRequest"),
+  resetBeaconData: require("./resetBeaconData"),
   resyncPackage: require("./resyncPackage"),
   restartPackage: require("./restartPackage"),
   restartPackageVolumes: require("./restartPackageVolumes"),
