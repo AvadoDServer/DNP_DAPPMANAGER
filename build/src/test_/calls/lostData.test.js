@@ -55,7 +55,8 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
    * opts.volumes: output lines of `docker volume ls`
    * opts.containers: dockerList.listContainers() result
    * opts.otherMounts: volume names mounted by containers that are not packages
-   * opts.probe: { [volume]: { entries, kb } | Error }
+   * opts.probe: { [volume]: { entries, kb } | Error } (ls -A and du -sk)
+   * opts.duFail: volumes whose du -sk fails
    * opts.inspect: { [volume]: string | Error }
    * opts.copy: stdout of the copy command, or an Error
    * opts.db: initial content of the dappmanager db
@@ -67,12 +68,22 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       if (cmd === "docker volume ls --format '{{.Name}}'") {
         return (opts.volumes || []).join("\n");
       }
-      if (cmd.includes("__SIZE__")) {
-        const vol = cmd.match(/^docker run --rm -v (\S+):\/vol:ro busybox /)[1];
+      if (cmd.includes("ls -A")) {
+        // batched: -v <vol>:/v<i>:ro for each volume
+        const mounts = [...cmd.matchAll(/-v (\S+):(\/v\d+):ro/g)];
+        const out = [];
+        for (const [, vol, dir] of mounts) {
+          const p = (opts.probe || {})[vol];
+          if (p instanceof Error) throw p;
+          out.push(`__VOL__ ${dir}`, ...((p && p.entries) || []));
+        }
+        return out.join("\n");
+      }
+      if (cmd.includes(" busybox du -sk /vol")) {
+        const vol = cmd.match(/-v (\S+):\/vol:ro/)[1];
+        if ((opts.duFail || []).includes(vol)) throw Error("du failed");
         const p = (opts.probe || {})[vol];
-        if (p instanceof Error) throw p;
-        if (!p) return `__SIZE__\n4\t/vol`;
-        return `${p.entries.join("\n")}\n__SIZE__\n${p.kb}\t/vol`;
+        return `${(p && p.kb) || 4}\t/vol`;
       }
       if (cmd.startsWith("docker volume inspect --format '{{.CreatedAt}}' ")) {
         const vol = cmd.split(" ").pop();
@@ -80,11 +91,13 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
         if (v instanceof Error) throw v;
         return v || "2026-09-01T10:00:00Z";
       }
-      if (cmd.includes("cp -an")) {
+      if (cmd.includes("avado-recover-tmp")) {
+        if (opts.copyHook) await opts.copyHook();
         if (opts.copy instanceof Error) throw opts.copy;
-        return opts.copy !== undefined ? opts.copy : "SKIPPED 0 0\n12\n2048\t/to";
+        return opts.copy !== undefined ? opts.copy : "FILES 12\nSKIPPED 0 0\n2048\t/to";
       }
       if (cmd.startsWith("docker rm -f recover-data-")) return "";
+      if (cmd.startsWith("docker rm -f lostdata-")) return "";
       throw Error(`unexpected command ${cmd}`);
     });
     const containers = opts.containers || defaultContainers();
@@ -141,7 +154,7 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
   }
 
   const full = (entries, kb = 100) => ({ entries, kb });
-  const probed = t => t.commands.filter(c => c.includes("__SIZE__"));
+  const probed = t => t.commands.filter(c => c.includes("ls -A"));
 
   let rpCompose;
   before(() => {
@@ -166,6 +179,7 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
         {
           name: v2,
           anonymous: false,
+          confidence: "high",
           createdAt: "2026-09-01T10:00:00Z",
           entries: ["data", ".rocketpool"],
           sizeKb: 300,
@@ -174,6 +188,7 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
         {
           name: v1,
           anonymous: false,
+          confidence: "high",
           createdAt: "2026-09-01T10:00:00Z",
           entries: ["data"],
           sizeKb: 7,
@@ -229,11 +244,16 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
         }
       });
       const { result } = await t.findLostData({ id: RP });
-      expect(result.candidates.map(c => [c.name, c.anonymous, c.target])).to.deep.equal([
-        [ANON, true, RP_LIVE]
-      ]);
-      // the live volume is probed once, read-only
-      expect(probed(t).filter(c => c.includes(`-v ${RP_LIVE}:/vol:ro `))).to.have.length(1);
+      expect(
+        result.candidates.map(c => [c.name, c.anonymous, c.confidence, c.target])
+      ).to.deep.equal([[ANON, true, "low", RP_LIVE]]);
+      // one batched, read-only ls over both anonymous volumes and the live one
+      expect(probed(t)).to.have.length(1);
+      for (const v of [ANON, ANON2, RP_LIVE]) expect(probed(t)[0]).to.match(new RegExp(`-v ${v}:/v\\d+:ro`));
+      // du only for the final candidate
+      const du = t.commands.filter(c => c.includes("du -sk"));
+      expect(du).to.have.length(1);
+      expect(du[0]).to.include(`-v ${ANON}:/vol:ro`);
     });
 
     it("excludes anonymous volumes when the package has more than one live volume", async () => {
@@ -261,11 +281,180 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       const t = setup({
         volumes: [RP_LIVE, ANON, ANON2],
         containers: [container(RP, [RP_LIVE, ANON2])],
-        probe: { [RP_LIVE]: full(["data"]), [ANON]: full(["data"]) }
+        probe: { [RP_LIVE]: full(["wallet"]), [ANON]: full(["wallet"]) }
       });
       const { result } = await t.findLostData({ id: RP });
       expect(result.live.map(l => l.name)).to.deep.equal([RP_LIVE]);
       expect(result.candidates.map(c => c.name)).to.deep.equal([ANON]);
+    });
+  });
+
+  describe("scan: compose volume keys", () => {
+    const NM = "nethermind.avado.dnp.dappnode.eth";
+    const NM_DB = "nethermindavadodnpdappnodeeth_nethermind_db";
+    const NM_LOGS = "nethermindavadodnpdappnodeeth_logs";
+
+    it("matches a key that contains _ (nethermind_db) in another project-name spelling", async () => {
+      const oldDb = "nethermind-avado-dnp-dappnode-eth_nethermind_db";
+      const oldLogs = "nethermind_avado_dnp_dappnode_eth_logs";
+      const t = setup({
+        volumes: [NM_DB, NM_LOGS, oldDb, oldLogs, "nethermind-avado-dnp-dappnode-eth_db", "nethermind-avado-dnp-dappnode-eth_nethermind"],
+        containers: [container(NM, [NM_DB, NM_LOGS])],
+        probe: {
+          [oldDb]: full(["nethermind_db"]),
+          [oldLogs]: full(["log.txt"]),
+          "nethermind-avado-dnp-dappnode-eth_db": full(["x"]),
+          "nethermind-avado-dnp-dappnode-eth_nethermind": full(["x"])
+        }
+      });
+      const { result } = await t.findLostData({ id: NM });
+      expect(result.candidates.map(c => [c.name, c.target, c.confidence])).to.deep.equal([
+        [oldDb, NM_DB, "high"],
+        [oldLogs, NM_LOGS, "high"]
+      ]);
+    });
+
+    it("lower-cases the prefix before comparing, and does not ignore extra upper-case letters", async () => {
+      const upper = "RocketPool-Avado-Dnp-Dappnode-Eth_rocketpool";
+      const extra = "XYZrocketpoolavadodnpdappnodeeth_rocketpool";
+      const t = setup({
+        volumes: [RP_LIVE, upper, extra],
+        containers: [container(RP, [RP_LIVE])],
+        probe: { [upper]: full(["data"]), [extra]: full(["data"]) }
+      });
+      const { result } = await t.findLostData({ id: RP });
+      expect(result.candidates.map(c => c.name)).to.deep.equal([upper]);
+    });
+
+    it("needs the same key, not only the same last part", async () => {
+      const t = setup({
+        volumes: [NM_DB, "nethermind-avado-dnp-dappnode-eth_other_db"],
+        containers: [container(NM, [NM_DB])],
+        probe: { "nethermind-avado-dnp-dappnode-eth_other_db": full(["x"]) }
+      });
+      const { result } = await t.findLostData({ id: NM });
+      expect(result.candidates).to.deep.equal([]);
+      expect(probed(t)).to.deep.equal([]);
+    });
+  });
+
+  describe("scan: anonymous volumes are low confidence and tightly limited", () => {
+    const GETH = "geth.avado.dnp.dappnode.eth";
+    const GETH_LIVE = "gethavadodnpdappnodeeth_geth";
+
+    it("(a) are never part of listLostData, and listLostData does not probe them", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, TEKU_LIVE, ANON],
+        containers: [container(RP, [RP_LIVE])],
+        probe: { [RP_LIVE]: full(["wallet"]), [ANON]: full(["wallet"]) }
+      });
+      expect((await t.listLostData()).result).to.deep.equal([]);
+      expect(probed(t)).to.deep.equal([]);
+      // the package page still shows it, as low confidence
+      const { result } = await t.findLostData({ id: RP });
+      expect(result.candidates.map(c => [c.name, c.confidence])).to.deep.equal([[ANON, "low"]]);
+    });
+
+    it("(b) are never offered to validator or consensus client packages", async () => {
+      for (const id of [
+        TEKU,
+        "nimbus.avado.dnp.dappnode.eth",
+        "lighthouse.avado.dnp.dappnode.eth",
+        "prysm-beacon-chain-mainnet.avado.dnp.dappnode.eth",
+        "eth2validator.avado.dnp.dappnode.eth",
+        "validator-tools.avado.dnp.dappnode.eth"
+      ]) {
+        const live = "x_" + id.replace(/[^a-z0-9]/g, "");
+        const t = setup({
+          volumes: [live, ANON],
+          containers: [container(id, [live])],
+          probe: { [live]: full(["slashing.sqlite"]), [ANON]: full(["slashing.sqlite"]) }
+        });
+        const { result } = await t.findLostData({ id });
+        expect(result.candidates, id).to.deep.equal([]);
+        // nothing that could receive it, so nothing is probed
+        expect(probed(t), id).to.deep.equal([]);
+      }
+    });
+
+    it("(c) ignore generic and hidden names when looking for a shared entry", async () => {
+      const generic = ["settings.json", "settings", "data", "config", "keys", "logs", "db", "validators", "validator", ".rocketpool", "Data"];
+      const t = setup({
+        volumes: [RP_LIVE, ANON],
+        containers: [container(RP, [RP_LIVE])],
+        probe: { [RP_LIVE]: full(generic), [ANON]: full(generic) }
+      });
+      expect((await t.findLostData({ id: RP })).result.candidates).to.deep.equal([]);
+
+      const t2 = setup({
+        volumes: [RP_LIVE, ANON],
+        containers: [container(RP, [RP_LIVE])],
+        probe: { [RP_LIVE]: full(generic.concat(["backups"])), [ANON]: full(["data", "backups"]) }
+      });
+      expect((await t2.findLostData({ id: RP })).result.candidates.map(c => c.name)).to.deep.equal([ANON]);
+    });
+
+    it("(c) need exactly one live volume", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, "rocketpoolavadodnpdappnodeeth_eth1", ANON],
+        containers: [container(RP, [RP_LIVE, "rocketpoolavadodnpdappnodeeth_eth1"])],
+        probe: { [RP_LIVE]: full(["wallet"]), [ANON]: full(["wallet"]) }
+      });
+      expect((await t.findLostData({ id: RP })).result.candidates).to.deep.equal([]);
+    });
+
+    it("(d) are offered to none when they fit two packages", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, GETH_LIVE, ANON],
+        containers: [container(RP, [RP_LIVE]), container(GETH, [GETH_LIVE])],
+        probe: { [RP_LIVE]: full(["wallet"]), [GETH_LIVE]: full(["wallet"]), [ANON]: full(["wallet"]) }
+      });
+      expect((await t.findLostData({ id: RP })).result.candidates).to.deep.equal([]);
+      expect((await t.findLostData({ id: GETH })).result.candidates).to.deep.equal([]);
+    });
+
+    it("(d) a validator package that fits blocks the offer to another package", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, TEKU_LIVE, ANON],
+        containers: [container(RP, [RP_LIVE]), container(TEKU, [TEKU_LIVE])],
+        probe: { [RP_LIVE]: full(["wallet"]), [TEKU_LIVE]: full(["wallet"]), [ANON]: full(["wallet"]) }
+      });
+      expect((await t.findLostData({ id: RP })).result.candidates).to.deep.equal([]);
+    });
+
+    it("(d) one anonymous volume per package when each fits only one", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, GETH_LIVE, ANON, ANON2],
+        containers: [container(RP, [RP_LIVE]), container(GETH, [GETH_LIVE])],
+        probe: {
+          [RP_LIVE]: full(["wallet"]),
+          [GETH_LIVE]: full(["geth"]),
+          [ANON]: full(["wallet"]),
+          [ANON2]: full(["geth", "keystore"])
+        }
+      });
+      expect((await t.findLostData({ id: RP })).result.candidates.map(c => c.name)).to.deep.equal([ANON]);
+      expect((await t.findLostData({ id: GETH })).result.candidates.map(c => c.name)).to.deep.equal([ANON2]);
+    });
+
+    it("are offered to none when a single live volume cannot be read", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, GETH_LIVE, ANON],
+        containers: [container(RP, [RP_LIVE]), container(GETH, [GETH_LIVE])],
+        probe: { [RP_LIVE]: full(["wallet"]), [GETH_LIVE]: Error("boom"), [ANON]: full(["wallet"]) }
+      });
+      expect((await t.findLostData({ id: RP })).result.candidates).to.deep.equal([]);
+    });
+
+    it("a batch that fails is retried one volume at a time", async () => {
+      const t = setup({
+        volumes: [RP_LIVE, ANON, ANON2],
+        containers: [container(RP, [RP_LIVE])],
+        probe: { [RP_LIVE]: full(["wallet"]), [ANON]: full(["wallet"]), [ANON2]: Error("boom") }
+      });
+      const { result } = await t.findLostData({ id: RP });
+      expect(result.candidates.map(c => c.name)).to.deep.equal([ANON]);
+      expect(probed(t)).to.have.length(4);
     });
   });
 
@@ -296,12 +485,30 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       expect(result.candidates[0].createdAt).to.equal(null);
     });
 
-    it("probes with the exact read-only busybox command", async () => {
+    it("probes with the exact read-only busybox commands: ls, then du only for candidates", async () => {
       const t = setup({ volumes: [RP_LIVE, old], probe: { [old]: full(["data"]) } });
       await t.findLostData({ id: RP });
-      expect(probed(t)).to.deep.equal([
-        `docker run --rm -v ${old}:/vol:ro busybox sh -c 'ls -A /vol | head -50; echo __SIZE__; du -sk /vol'`
+      const named = t.commands
+        .filter(c => c.startsWith("docker run"))
+        .map(c => c.replace(/lostdata-(ls|du)-\d+-\d+/, "lostdata-$1-N"));
+      expect(named).to.deep.equal([
+        `docker run --rm --name lostdata-ls-N -v ${old}:/v0:ro busybox sh -c 'for d in /v0; do echo "__VOL__ $d"; ls -A "$d" | head -50; done'`,
+        `docker run --rm --name lostdata-du-N -v ${old}:/vol:ro busybox du -sk /vol`
       ]);
+    });
+
+    it("drops a candidate whose du fails", async () => {
+      const t = setup({ volumes: [RP_LIVE, old], probe: { [old]: full(["data"]) }, duFail: [old] });
+      const { result } = await t.findLostData({ id: RP });
+      expect(result.candidates).to.deep.equal([]);
+    });
+
+    it("removes a failed probe container by name", async () => {
+      const t = setup({ volumes: [RP_LIVE, old], probe: { [old]: Error("timed out") } });
+      await t.findLostData({ id: RP });
+      const ls = probed(t)[0];
+      const name = ls.match(/--name (lostdata-ls-\d+-\d+) /)[1];
+      expect(t.commands).to.include(`docker rm -f ${name}`);
     });
 
     it("costs one volume ls and the container list on a healthy box", async () => {
@@ -400,9 +607,10 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
   });
 
   describe("recoverLostData", () => {
+    const { COPY_SCRIPT } = require("calls/recoverLostData");
     const old = "rocketpool-avado-dnp-dappnode-eth_rocketpool";
     const base = () => ({ volumes: [RP_LIVE, TEKU_LIVE, old], probe: { [old]: full(["data"], 2048) } });
-    const recoverCalls = t => t.commands.filter(c => c.includes("cp -an"));
+    const recoverCalls = t => t.commands.filter(c => c.includes("avado-recover-tmp"));
 
     async function expectThrow(promise) {
       let err;
@@ -455,24 +663,19 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
 
       sinon.assert.calledWith(t.docker.compose.stop, rpCompose);
       sinon.assert.calledWith(t.docker.safe.compose.up, rpCompose);
-      const copy = t.shell.getCalls().filter(c => c.args[0].includes("cp -an"));
+      const copy = t.shell.getCalls().filter(c => c.args[0].includes("avado-recover-tmp"));
       expect(copy).to.have.length(1);
       const at = text => t.commands.findIndex(c => c.includes(text));
       expect(at("STOP")).to.be.greaterThan(-1);
-      expect(at("STOP")).to.be.lessThan(at("cp -an"));
-      expect(at("cp -an")).to.be.lessThan(at("UP"));
+      expect(at("STOP")).to.be.lessThan(at("avado-recover-tmp"));
+      expect(at("avado-recover-tmp")).to.be.lessThan(at("UP"));
       expect(copy[0].args[0]).to.match(new RegExp(`^docker run --rm --name recover-data-\\d+ `));
       expect(copy[0].args[0].replace(/recover-data-\d+/, "recover-data-N")).to.equal(
-        `docker run --rm --name recover-data-N -v ${old}:/from:ro -v ${RP_LIVE}:/to busybox sh -c '` +
-          `cd /from && find . -type f | while IFS= read -r f; do if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then echo "$f"; fi; done > /tmp/skipped` +
-          ` && echo "SKIPPED $(wc -l < /tmp/skipped) $(grep -ciE "wallet|password" /tmp/skipped)"` +
-          ` && find . -mindepth 1 | while IFS= read -r f; do [ -e "/to/$f" ] || [ -L "/to/$f" ] || cp -an "$f" "/to/$f" || exit 1; done` +
-          ` && find . -type f | while IFS= read -r f; do [ -e "/to/$f" ] || { echo "MISSING $f"; exit 1; }; done` +
-          ` && find . -type f | wc -l && du -sk /to'`
+        `docker run --rm --name recover-data-N -v ${old}:/from:ro -v ${RP_LIVE}:/to busybox sh -c '${COPY_SCRIPT}'`
       );
       expect(copy[0].args[1]).to.deep.equal({ timeout: 10 * 60 * 1000 });
 
-      expect(res.result).to.deep.equal({ files: 12, sizeKb: 2048, skipped: 0 });
+      expect(res.result).to.deep.equal({ files: 12, copied: 12, skipped: 0, sizeKb: 2048 });
       expect(res.message).to.equal(`Recovered 12 files into ${RP_LIVE} from ${old}`);
       expect(res.logMessage).to.equal(true);
       expect(res.userAction).to.equal(true);
@@ -481,13 +684,15 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       for (const cmd of t.commands) expect(cmd).to.not.match(/docker volume rm|rm -rf|volume prune/);
     });
 
-    it("throws on a MISSING file and still starts the package again", async () => {
+    it("throws when files could not be copied and still starts the package again", async () => {
       const err0 = Error("Command failed: docker run ...");
-      err0.stdout = "MISSING ./data/wallet\n";
+      err0.stdout = "FILES 9\nSKIPPED 3 1\nFAILED 2 ./data/wallet\n";
       err0.code = 1;
       const t = setup(Object.assign(base(), { copy: err0 }));
       const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
-      expect(err.message).to.match(/^Recovering the data failed: MISSING \.\/data\/wallet\./);
+      expect(err.message).to.equal(
+        "Recovering the data failed: 2 files could not be copied (first: ./data/wallet). Nothing was deleted; contact AVADO support."
+      );
       expect(err.message).to.include("contact AVADO support");
       sinon.assert.calledWith(t.docker.safe.compose.up, rpCompose);
       sinon.assert.calledWith(t.eventBus.emit, "emitPackages");
@@ -500,10 +705,10 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       for (const cmd of t.commands) expect(cmd).to.not.match(/docker volume rm|rm -rf|volume prune/);
     });
 
-    it("throws on a MISSING line in a zero-exit output too", async () => {
-      const t = setup(Object.assign(base(), { copy: "MISSING ./x\n3\n10\t/to" }));
+    it("throws on a FAILED line in a zero-exit output too", async () => {
+      const t = setup(Object.assign(base(), { copy: "FILES 3\nSKIPPED 0 0\nFAILED 1 ./x\n10\t/to" }));
       const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
-      expect(err.message).to.match(/^Recovering the data failed: MISSING \.\/x\./);
+      expect(err.message).to.match(/^Recovering the data failed: 1 file could not be copied \(first: \.\/x\)\./);
       sinon.assert.calledOnce(t.docker.safe.compose.up);
     });
 
@@ -525,6 +730,43 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       await expectThrow(t.recoverLostData({ id: RP, volume: old }));
       expect(recoverCalls(t)).to.deep.equal([]);
       sinon.assert.calledOnce(t.docker.safe.compose.up);
+    });
+
+    it("refuses a second recovery of the same app while one is running", async () => {
+      let release;
+      const gate = new Promise(r => (release = r));
+      const t = setup(Object.assign(base(), { copyHook: () => gate }));
+      const first = t.recoverLostData({ id: RP, volume: old });
+      // wait until the first one is copying
+      while (!t.commands.some(c => c.includes("avado-recover-tmp"))) {
+        await new Promise(r => setImmediate(r));
+      }
+      const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err.message).to.equal("A recovery for this app is already running.");
+      release();
+      await first;
+      // the lock is released: the next call gets past it
+      const err2 = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err2.message).to.equal(
+        "That volume is not on the list any more. Reload the page and try again."
+      );
+      expect(recoverCalls(t)).to.have.length(1);
+    });
+
+    it("releases the lock when a recovery fails", async () => {
+      const t = setup(Object.assign(base(), { copy: Error("boom") }));
+      await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err.message).to.not.include("already running");
+    });
+
+    it("the copy script walks with -print0, copies through a temporary name and never deletes", () => {
+      expect(COPY_SCRIPT).to.not.include("'");
+      expect(COPY_SCRIPT).to.include("find . -mindepth 1 -print0");
+      expect(COPY_SCRIPT).to.include('read -r -d ""');
+      expect(COPY_SCRIPT).to.include('cp -af "$f" "$t" && mv -n "$t" "/to/$f"');
+      expect(COPY_SCRIPT).to.include('[ -L "/to/$p" ]');
+      expect(COPY_SCRIPT).to.not.match(/\brm\b|rmdir|unlink|--remove/);
     });
 
     it("refuses when the compose file is missing", async () => {
@@ -589,24 +831,27 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
     });
 
     it("does not remember a volume when the copy failed", async () => {
-      const t = setup(Object.assign(base(), { copy: "SKIPPED 0 0\nMISSING ./x\n3\n10\t/to" }));
+      const t = setup(Object.assign(base(), { copy: "FILES 3\nSKIPPED 0 0\nFAILED 1 ./x\n10\t/to" }));
       await expectThrow(t.recoverLostData({ id: RP, volume: old }));
       expect(t.store.lostDataRecovered).to.equal(undefined);
     });
 
     it("reports files that already existed as skipped, without a warning", async () => {
-      const t = setup(Object.assign(base(), { copy: "SKIPPED 3 0\n12\n2048\t/to" }));
+      const t = setup(Object.assign(base(), { copy: "FILES 12\nSKIPPED 3 0\n2048\t/to" }));
       const res = await t.recoverLostData({ id: RP, volume: old });
-      expect(res.result).to.deep.equal({ files: 12, sizeKb: 2048, skipped: 3 });
+      expect(res.result).to.deep.equal({ files: 12, copied: 9, skipped: 3, sizeKb: 2048 });
+      // the message counts only the files that were copied
+      expect(res.message).to.equal(`Recovered 9 files into ${RP_LIVE} from ${old}`);
     });
 
     it("warns when a kept file is named like a wallet or password", async () => {
-      const t = setup(Object.assign(base(), { copy: "SKIPPED 3 1\n12\n2048\t/to" }));
+      const t = setup(Object.assign(base(), { copy: "FILES 12\nSKIPPED 3 1\n2048\t/to" }));
       const res = await t.recoverLostData({ id: RP, volume: old });
       expect(res.result).to.deep.equal({
         files: 12,
-        sizeKb: 2048,
+        copied: 9,
         skipped: 3,
+        sizeKb: 2048,
         warning:
           "Some files already existed in the app's storage and were kept; the copy from the old storage was not used for them."
       });

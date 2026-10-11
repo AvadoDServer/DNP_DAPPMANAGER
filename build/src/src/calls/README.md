@@ -63,7 +63,9 @@ ever deleted. The scan lives in `modules/lostData.js`.
 
 ### `listLostData()`
 
-One scan of every installed non-core package. Read-only.
+One scan of every installed non-core package, for the Home finding. Read-only.
+Only name-matched candidates (`confidence: "high"`); anonymous volumes are never
+looked at here.
 
 ```
 { message, result: LostDataEntry[] }   // only packages with >= 1 candidate
@@ -71,7 +73,8 @@ One scan of every installed non-core package. Read-only.
 
 ### `findLostData({ id })`
 
-The same scan for one package. `id` is required. Read-only.
+The same scan for one package, for the package page, including anonymous
+volumes (`confidence: "low"`). `id` is required. Read-only.
 
 ```
 { message, result: LostDataEntry }
@@ -81,25 +84,38 @@ The same scan for one package. `id` is required. Read-only.
 
 ### `recoverLostData({ id, volume })`
 
-`volume` must be the `name` of a candidate of a fresh scan, otherwise it throws
-`That volume is not on the list any more. Reload the page and try again.`
-Refuses core packages and the DAPPMANAGER. Stops the package, copies every file
-and folder that does not exist in the live volume yet (existing files are never
-overwritten; owners, modes and symlinks are kept), checks that every source file
-exists in the live volume, and always starts the package again. On success the
-volume is stored in the db under `lostDataRecovered` (`[{ volume, package, at }]`)
-and is never offered as a candidate again; it is listed under `recovered`.
+`volume` must be the `name` of a candidate of a fresh scan (high or low
+confidence), otherwise it throws `That volume is not on the list any more.
+Reload the page and try again.` Refuses core packages and the DAPPMANAGER, and
+a second recovery of the same package while one is running (`A recovery for
+this app is already running.`).
+
+Stops the package, then copies, in one busybox run:
+- every entry is walked parents first (any file name, also with newlines);
+- an entry that already exists in the live volume, or whose parent folder in
+  the live volume is a symlink, is kept as it is and counted as skipped;
+- a missing folder is created with the old owner and mode; anything else is
+  copied with `cp -a` to `<name>.avado-recover-tmp` and renamed into place
+  with `mv -n`, so an interrupted copy never leaves half a file under the real
+  name (a retry finishes it);
+- a failed entry is counted and the walk goes on.
+
+**The package is always started again afterwards, also when it was stopped
+before the call**, and also when the copy failed. On success the volume is
+stored in the db under `lostDataRecovered` (`[{ volume, package, at }]`), is
+never offered as a candidate again, and is listed under `recovered`.
 
 ```
 {
-  message: "Recovered <files> files into <target> from <volume>",
+  message: "Recovered <copied> files into <target> from <volume>",
   logMessage: true,
   userAction: true,
   result: {
-    files,     // number of files in the old volume (all present in the live one)
+    files,     // regular files in the old volume
+    copied,    // files - skipped
+    skipped,   // files that already existed in the live volume (or sit
+               // under a symlinked folder there) and were kept as they were
     sizeKb,    // du -sk of the live volume after the copy
-    skipped,   // files of the old volume that already existed in the live one
-               // and were kept as they were (not copied)
     warning?   // only when skipped > 0 and a kept file's path contains
                // "wallet" or "password" (any case):
                // "Some files already existed in the app's storage and were kept;
@@ -108,11 +124,14 @@ and is never offered as a candidate again; it is listed under `recovered`.
 }
 ```
 
-Errors: `Recovering the data failed: <first line>. Nothing was deleted; contact
-AVADO support.` (a `MISSING ./path` line or the first error line), and
-`Recovering the data took longer than 10 minutes and was stopped. Files already
-copied were kept; contact AVADO support.` The package is started again in both
-cases.
+Errors (the package is started again in every case; the files copied before
+the error stay in the live volume):
+- `Recovering the data failed: <n> file(s) could not be copied (first: <path>).
+  Nothing was deleted; contact AVADO support.`
+- `Recovering the data failed: <first error line>. Nothing was deleted; contact
+  AVADO support.`
+- `Recovering the data took longer than 10 minutes and was stopped. Files
+  already copied were kept; contact AVADO support.`
 
 ### Shapes
 
@@ -121,13 +140,14 @@ LostDataEntry = {
   package: string,             // dnp name
   title: string,               // e.g. "Rocketpool"
   live: LiveVolume[],
-  candidates: Candidate[],
+  candidates: Candidate[],     // "high" first
   recovered: { volume: string, at: string /* ISO date */ }[]
 }
 LiveVolume = { name: string, mountPath: string|null }  // named volumes of the package
 Candidate  = {
   name: string,                // the unused volume
   anonymous: boolean,
+  confidence: "high" | "low",  // "low" = anonymous, show as "not sure"
   createdAt: string|null,      // docker volume inspect .CreatedAt
   entries: string[],           // first 50 top-level names
   sizeKb: number,
@@ -137,18 +157,34 @@ Candidate  = {
 
 ### How candidates are found
 
-A candidate is a volume that no container mounts (running or not), that was not
-recovered before, and that
+Only volumes that no container mounts (running or not, package or not) and that
+were not recovered before are looked at.
 
-- is named `<prefix>_<short>`, where `<short>` is the part after the last `_`
-  of one of the package's live volumes and `<prefix>` equals the package name
-  once everything but `[a-z0-9]` is removed from both; `target` is that live
-  volume, or
-- is anonymous (64 hex characters), the package has exactly one live volume
-  (`target`), and both share at least one top-level entry name.
+- **confidence "high"** (name match): each live volume's key is the part after
+  the first `_` whose prefix, lower-cased with everything but `[a-z0-9]`
+  removed, equals the package name treated the same way (e.g.
+  `nethermindavadodnpdappnodeeth_nethermind_db` has key `nethermind_db`). A
+  volume matches when it splits at some `_` into such a prefix and the same key;
+  `target` is that live volume.
+- **confidence "low"** (anonymous, 64 hex characters), only in `findLostData`
+  and `recoverLostData`, only when all of these hold:
+  - the package has exactly one live volume (`target`);
+  - the package name contains none of teku, nimbus, lighthouse, prysm,
+    validator, eth2 (their data holds validator keys);
+  - the volume shares a top-level name with the live volume, not counting
+    `settings.json`, `settings`, `data`, `config`, `keys`, `logs`, `db`,
+    `validators`, `validator` and names starting with `.`;
+  - it fits no other package with one live volume (validator packages
+    included), and every such live volume could be read.
 
-Candidates are probed read-only with busybox (`entries`, `sizeKb` from
-`du -sk`); empty ones and ones that cannot be read are left out. Every volume
-name is checked against `/^[A-Za-z0-9_.-]+$/` before it is used in a command. A
-healthy box costs one `docker volume ls`, the container list and one db read;
-busybox only runs when an unused volume matches.
+Volumes are probed read-only with busybox: `ls -A` (several volumes per run),
+then `du -sk` only for the final candidates. Empty ones and ones that cannot be
+read are left out; a probe container that fails is removed by name. Every
+volume name is checked against `/^[A-Za-z0-9_.-]+$/` before it is used in a
+command.
+
+Cost: `listLostData` runs one `docker volume ls`, the container list and one
+db read; busybox only runs when an unused volume matches a package by name.
+`findLostData` and `recoverLostData` also run one batched `ls -A` over the
+unused anonymous volumes and the single live volumes when the package could
+receive an anonymous volume.

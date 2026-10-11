@@ -13,29 +13,61 @@ const { eventBus, eventBusTag } = require("eventBus");
 const COPY_TIMEOUT = 10 * 60 * 1000;
 
 /**
- * Copies the unused volume into the live one without overwriting anything,
- * keeping owners, modes and symlinks, then checks that every source file
- * exists in the target.
- *
- * Not `cp -an /from/. /to/`: busybox cp -n skips a directory that already
- * exists as a whole (tested on busybox 1.38), so it copies nothing into an
- * existing volume root. Instead every entry, parents first, that does not
- * exist in the target is copied with cp -a; an entry that exists is kept and
- * only its children are looked at. `&&` makes a failed cp or a MISSING file
- * end the script with a non-zero exit.
- *
- * Before copying, the files that already exist in the target (and so are
- * kept, not copied) are counted: `SKIPPED <files> <names with wallet or
- * password>`. Only the counts are printed, never the list, so a big volume
- * cannot overflow the output buffer.
+ * Busybox script that copies the old volume (/from, read-only) into the live
+ * one (/to). Nothing is ever deleted or overwritten:
+ * - Entries are walked parents first (find -print0 / read -d "", so any file
+ *   name works). An entry that exists in /to, or whose parent in /to is a
+ *   symlink, is kept as it is; a regular file counts as skipped (and as a
+ *   key file when its path contains wallet or password).
+ * - A missing folder is created with the owner and mode of the old one.
+ * - Anything else is copied with cp -a to `<name>.avado-recover-tmp` in the
+ *   same folder and then renamed into place with mv -n, so an interrupted
+ *   copy never leaves half a file under the real name (a retry overwrites
+ *   the temporary file and renames it).
+ * - A failure is counted and the walk goes on; at the end the script prints
+ *   FILES <regular files in /from>, SKIPPED <n> <key files> and, only when
+ *   something failed, FAILED <n> <first path> with exit 1; then du -sk /to.
+ * The script holds no single quote: it runs inside sh -c '...'.
+ * (busybox cp -n skips an existing folder as a whole, so `cp -an /from/. /to/`
+ * copies nothing into an existing volume root.)
  */
+const COPY_SCRIPT = [
+  "cd /from || exit 1",
+  "find . -mindepth 1 -print0 | {",
+  '  files=0; skipped=0; key=0; failed=0; first=""',
+  '  while IFS= read -r -d "" f; do',
+  "    isfile=0",
+  '    if [ -f "$f" ] && [ ! -L "$f" ]; then isfile=1; files=$((files+1)); fi',
+  "    keep=0",
+  '    if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then keep=1; fi',
+  '    p="${f%/*}"',
+  '    while [ "$keep" = 0 ] && [ "$p" != "." ] && [ -n "$p" ]; do',
+  '      if [ -L "/to/$p" ]; then keep=1; fi',
+  '      q="${p%/*}"; [ "$q" = "$p" ] && break; p="$q"',
+  "    done",
+  '    if [ "$keep" = 1 ]; then',
+  '      if [ "$isfile" = 1 ]; then',
+  "        skipped=$((skipped+1))",
+  '        case "$f" in *[Ww][Aa][Ll][Ll][Ee][Tt]*|*[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]*) key=$((key+1));; esac',
+  "      fi",
+  "      continue",
+  "    fi",
+  '    if [ -d "$f" ] && [ ! -L "$f" ]; then',
+  '      mkdir "/to/$f" && chown "$(stat -c %u:%g "$f")" "/to/$f" && chmod "$(stat -c %a "$f")" "/to/$f"',
+  "    else",
+  '      t="/to/$f.avado-recover-tmp"',
+  '      cp -af "$f" "$t" && mv -n "$t" "/to/$f" && [ ! -e "$t" ] && [ ! -L "$t" ]',
+  "    fi",
+  '    if [ $? != 0 ]; then failed=$((failed+1)); [ -n "$first" ] || first="$f"; fi',
+  "  done",
+  '  echo "FILES $files"',
+  '  echo "SKIPPED $skipped $key"',
+  '  if [ "$failed" != 0 ]; then echo "FAILED $failed $first"; exit 1; fi',
+  "} && du -sk /to"
+].join("\n");
+
 const copyCommand = (name, volume, target) =>
-  `docker run --rm --name ${name} -v ${volume}:/from:ro -v ${target}:/to busybox sh -c '` +
-  `cd /from && find . -type f | while IFS= read -r f; do if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then echo "$f"; fi; done > /tmp/skipped` +
-  ` && echo "SKIPPED $(wc -l < /tmp/skipped) $(grep -ciE "wallet|password" /tmp/skipped)"` +
-  ` && find . -mindepth 1 | while IFS= read -r f; do [ -e "/to/$f" ] || [ -L "/to/$f" ] || cp -an "$f" "/to/$f" || exit 1; done` +
-  ` && find . -type f | while IFS= read -r f; do [ -e "/to/$f" ] || { echo "MISSING $f"; exit 1; }; done` +
-  ` && find . -type f | wc -l && du -sk /to'`;
+  `docker run --rm --name ${name} -v ${volume}:/from:ro -v ${target}:/to busybox sh -c '${COPY_SCRIPT}'`;
 
 const lines = s =>
   String(s || "")
@@ -43,12 +75,21 @@ const lines = s =>
     .map(l => l.trim())
     .filter(Boolean);
 
+const parseFailed = out => {
+  const m = lines(out)
+    .map(l => l.match(/^FAILED (\d+) (.*)$/))
+    .find(Boolean);
+  return m
+    ? `${m[1]} file${m[1] === "1" ? "" : "s"} could not be copied (first: ${m[2]})`
+    : null;
+};
+
 /**
  * First useful line of a failed copy, without the command itself
  */
 function firstLine(e) {
-  const missing = lines(e.stdout).find(l => l.startsWith("MISSING "));
-  if (missing) return missing;
+  const failedLine = parseFailed(e.stdout);
+  if (failedLine) return failedLine;
   const stderr = lines(e.stderr)[0];
   if (stderr) return stderr;
   return (
@@ -68,19 +109,35 @@ const failed = line =>
     `Recovering the data failed: ${line.replace(/\.$/, "")}. Nothing was deleted; contact AVADO support.`
   );
 
+// Packages with a recovery running in this process
+const running = new Set();
+
 /**
  * Copies a package's data from an unused volume found by findLostData into
  * the package's live volume. Nothing is ever deleted: files that already
- * exist in the live volume are kept as they are.
+ * exist in the live volume are kept as they are. The package is always
+ * started again afterwards, also when it was stopped before the call.
  *
  * @param {string} id DNP .eth name
  * @param {string} volume name of a candidate returned by findLostData
  */
-const recoverLostData = async ({ id, volume }) => {
+const recoverLostData = async ({ id, volume } = {}) => {
   if (!id) throw Error("kwarg id must be defined");
   if (!volume || typeof volume !== "string") {
     throw Error("kwarg volume must be defined");
   }
+  if (running.has(id)) {
+    throw Error("A recovery for this app is already running.");
+  }
+  running.add(id);
+  try {
+    return await recover({ id, volume });
+  } finally {
+    running.delete(id);
+  }
+};
+
+async function recover({ id, volume }) {
   if (id.includes("dappmanager.dnp.dappnode.eth")) {
     throw Error(
       "The data of the AVADO package manager cannot be recovered this way. Nothing was changed."
@@ -155,13 +212,12 @@ const recoverLostData = async ({ id, volume }) => {
       }
       throw failed(firstLine(e));
     }
-    const missing = lines(out).find(l => l.startsWith("MISSING "));
-    if (missing) throw failed(missing);
-    // The last two lines are `find | wc -l` and `du -sk /to`
-    const fromEnd = lines(out).reverse();
-    const sizeLine = fromEnd.find(l => /^\d+\s+\/to$/.test(l));
-    const filesLine = fromEnd.find(l => /^\d+$/.test(l));
-    files = filesLine ? parseInt(filesLine, 10) : 0;
+    const failedLine = parseFailed(out);
+    if (failedLine) throw failed(failedLine);
+    const outLines = lines(out);
+    const sizeLine = outLines.find(l => /^\d+\s+\/to$/.test(l));
+    const filesMatch = outLines.map(l => l.match(/^FILES (\d+)$/)).find(Boolean);
+    files = filesMatch ? parseInt(filesMatch[1], 10) : 0;
     sizeKb = sizeLine ? parseInt(sizeLine, 10) : 0;
     const skippedMatch = lines(out)
       .map(l => l.match(/^SKIPPED (\d+) (\d+)$/))
@@ -195,18 +251,20 @@ const recoverLostData = async ({ id, volume }) => {
   if (error && startError) throw Error(`${error.message} ${startError.message}`);
   if (error) throw error;
 
-  const message = `Recovered ${files} files into ${target} from ${volume}`;
+  const copied = Math.max(files - skipped, 0);
+  const message = `Recovered ${copied} files into ${target} from ${volume}`;
   if (startError) throw Error(`${message}, but ${startError.message}`);
   return {
     message,
     logMessage: true,
     userAction: true,
     result: Object.assign(
-      { files, sizeKb, skipped },
+      { files, copied, skipped, sizeKb },
       skipped > 0 && keyFilesSkipped ? { warning: SKIPPED_WARNING } : {}
     )
   };
-};
+}
 
 module.exports = recoverLostData;
 module.exports.copyCommand = copyCommand;
+module.exports.COPY_SCRIPT = COPY_SCRIPT;
