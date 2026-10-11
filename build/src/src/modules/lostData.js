@@ -21,8 +21,9 @@ const logs = require("logs.js")(module);
  * Cost: listLostData runs one `docker volume ls`, the container list and one
  * db read; busybox only runs when an unused volume matches a package by
  * name. findLostData and recoverLostData also look at unused anonymous
- * volumes: one batched, read-only `ls -A` over them and the single volumes
- * of the packages. `du -sk` only runs for the final candidates.
+ * volumes: a read-only `ls -A` over them and the single volumes of the
+ * packages, batched with up to 20 volumes per busybox run. `du -sk` only
+ * runs for the final candidates.
  */
 
 // Every volume name is checked against this before it is put in a command

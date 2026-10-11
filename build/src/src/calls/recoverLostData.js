@@ -1,4 +1,5 @@
 const fs = require("fs");
+const crypto = require("crypto");
 const getPath = require("utils/getPath");
 const params = require("params");
 const docker = require("modules/docker");
@@ -17,57 +18,81 @@ const COPY_TIMEOUT = 10 * 60 * 1000;
  * one (/to). Nothing is ever deleted or overwritten:
  * - Entries are walked parents first (find -print0 / read -d "", so any file
  *   name works). An entry that exists in /to, or whose parent in /to is a
- *   symlink, is kept as it is; a regular file counts as skipped (and as a
- *   key file when its path contains wallet or password).
+ *   symlink, is kept as it is; a regular file counts as skipped, and as a
+ *   key file when its path contains wallet or password AND it differs from
+ *   the old one (cmp -s; an identical file, e.g. from an earlier attempt,
+ *   gives no warning).
  * - A missing folder is created with the owner and mode of the old one.
- * - Anything else is copied with cp -a to `<name>.avado-recover-tmp` in the
- *   same folder and then renamed into place with mv -n, so an interrupted
- *   copy never leaves half a file under the real name (a retry overwrites
- *   the temporary file and renames it).
- * - A failure is counted and the walk goes on; at the end the script prints
- *   FILES <regular files in /from>, SKIPPED <n> <key files> and, only when
- *   something failed, FAILED <n> <first path> with exit 1; then du -sk /to.
+ * - Anything else is copied with cp -a to `<name><suffix>` in the same
+ *   folder and then renamed into place with mv -n, so an interrupted copy
+ *   never leaves half a file under the real name. The suffix is random per
+ *   run (`.avado-recover-tmp-<8 hex>`), so it never collides with a real
+ *   entry or a leftover of an earlier run; if `<name><suffix>` exists
+ *   anyway the entry fails. mv -n returns 0 when the target exists, so the
+ *   temporary name must be gone afterwards.
+ * - A failure is counted and the walk goes on.
+ * - The number of regular files walked must equal an independent count
+ *   (`find -type f -print0 | tr | wc -c`): busybox before 1.32 cannot read
+ *   NUL-separated names and would otherwise walk nothing and report success.
+ * Output: FILES <regular files walked>, SKIPPED <n> <key files>, then on
+ * failure `FAILED walk <walked>/<found>` or `FAILED <n> <first path>` with
+ * exit 1; on success du -sk /to.
  * The script holds no single quote: it runs inside sh -c '...'.
  * (busybox cp -n skips an existing folder as a whole, so `cp -an /from/. /to/`
  * copies nothing into an existing volume root.)
+ * Known limit: the temporary name is 27 characters longer, so a file name
+ * longer than 228 characters cannot be copied (it fails, nothing else).
  */
-const COPY_SCRIPT = [
-  "cd /from || exit 1",
-  "find . -mindepth 1 -print0 | {",
-  '  files=0; skipped=0; key=0; failed=0; first=""',
-  '  while IFS= read -r -d "" f; do',
-  "    isfile=0",
-  '    if [ -f "$f" ] && [ ! -L "$f" ]; then isfile=1; files=$((files+1)); fi',
-  "    keep=0",
-  '    if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then keep=1; fi',
-  '    p="${f%/*}"',
-  '    while [ "$keep" = 0 ] && [ "$p" != "." ] && [ -n "$p" ]; do',
-  '      if [ -L "/to/$p" ]; then keep=1; fi',
-  '      q="${p%/*}"; [ "$q" = "$p" ] && break; p="$q"',
-  "    done",
-  '    if [ "$keep" = 1 ]; then',
-  '      if [ "$isfile" = 1 ]; then',
-  "        skipped=$((skipped+1))",
-  '        case "$f" in *[Ww][Aa][Ll][Ll][Ee][Tt]*|*[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]*) key=$((key+1));; esac',
-  "      fi",
-  "      continue",
-  "    fi",
-  '    if [ -d "$f" ] && [ ! -L "$f" ]; then',
-  '      mkdir "/to/$f" && chown "$(stat -c %u:%g "$f")" "/to/$f" && chmod "$(stat -c %a "$f")" "/to/$f"',
-  "    else",
-  '      t="/to/$f.avado-recover-tmp"',
-  '      cp -af "$f" "$t" && mv -n "$t" "/to/$f" && [ ! -e "$t" ] && [ ! -L "$t" ]',
-  "    fi",
-  '    if [ $? != 0 ]; then failed=$((failed+1)); [ -n "$first" ] || first="$f"; fi',
-  "  done",
-  '  echo "FILES $files"',
-  '  echo "SKIPPED $skipped $key"',
-  '  if [ "$failed" != 0 ]; then echo "FAILED $failed $first"; exit 1; fi',
-  "} && du -sk /to"
-].join("\n");
+const TMP_SUFFIX_REGEX = /^\.avado-recover-tmp-[0-9a-f]{8}$/;
+const newTmpSuffix = () =>
+  `.avado-recover-tmp-${crypto.randomBytes(4).toString("hex")}`;
 
-const copyCommand = (name, volume, target) =>
-  `docker run --rm --name ${name} -v ${volume}:/from:ro -v ${target}:/to busybox sh -c '${COPY_SCRIPT}'`;
+const copyScript = suffix => {
+  if (!TMP_SUFFIX_REGEX.test(suffix)) throw Error("unexpected suffix");
+  return [
+    "cd /from || exit 1",
+    'found=$(find . -type f -print0 | tr -cd "\\000" | wc -c)',
+    '[ "$found" -ge 0 ] || exit 1',
+    "find . -mindepth 1 -print0 | {",
+    '  files=0; copied=0; skipped=0; key=0; failed=0; first=""',
+    '  while IFS= read -r -d "" f; do',
+    "    isfile=0",
+    '    if [ -f "$f" ] && [ ! -L "$f" ]; then isfile=1; files=$((files+1)); fi',
+    "    keep=0; linked=0",
+    '    if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then keep=1; fi',
+    '    p="${f%/*}"',
+    '    while [ "$keep" = 0 ] && [ "$p" != "." ] && [ -n "$p" ]; do',
+    '      if [ -L "/to/$p" ]; then keep=1; linked=1; fi',
+    '      q="${p%/*}"; [ "$q" = "$p" ] && break; p="$q"',
+    "    done",
+    '    if [ "$keep" = 1 ]; then',
+    '      if [ "$isfile" = 1 ]; then',
+    "        skipped=$((skipped+1))",
+    '        if [ "$linked" = 1 ] || ! cmp -s "$f" "/to/$f"; then',
+    '          case "$f" in *[Ww][Aa][Ll][Ll][Ee][Tt]*|*[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]*) key=$((key+1));; esac',
+    "        fi",
+    "      fi",
+    "      continue",
+    "    fi",
+    '    if [ -d "$f" ] && [ ! -L "$f" ]; then',
+    '      mkdir "/to/$f" && chown "$(stat -c %u:%g "$f")" "/to/$f" && chmod "$(stat -c %a "$f")" "/to/$f"',
+    "    else",
+    `      t="/to/$f${suffix}"`,
+    '      if [ -e "$t" ] || [ -L "$t" ]; then false; else cp -af "$f" "$t" && mv -n "$t" "/to/$f" && [ ! -e "$t" ] && [ ! -L "$t" ]; fi',
+    "    fi",
+    '    if [ $? != 0 ]; then failed=$((failed+1)); [ -n "$first" ] || first="$f"; elif [ "$isfile" = 1 ]; then copied=$((copied+1)); fi',
+    "  done",
+    '  echo "FILES $files"',
+    '  echo "SKIPPED $skipped $key"',
+    '  if [ "$files" -ne "$found" ]; then echo "FAILED walk $files/$found"; exit 1; fi',
+    '  if [ "$failed" != 0 ]; then echo "FAILED $failed $first"; exit 1; fi',
+    '  if [ "$found" -gt 0 ] && [ $((copied+skipped)) = 0 ]; then echo "FAILED walk 0/$found"; exit 1; fi',
+    "} && du -sk /to"
+  ].join("\n");
+};
+
+const copyCommand = (name, volume, target, suffix) =>
+  `docker run --rm --name ${name} -v ${volume}:/from:ro -v ${target}:/to busybox sh -c '${copyScript(suffix)}'`;
 
 const lines = s =>
   String(s || "")
@@ -76,6 +101,12 @@ const lines = s =>
     .filter(Boolean);
 
 const parseFailed = out => {
+  const walk = lines(out)
+    .map(l => l.match(/^FAILED walk (\d+)\/(\d+)$/))
+    .find(Boolean);
+  if (walk) {
+    return `only ${walk[1]} of the ${walk[2]} files in the old storage could be read`;
+  }
   const m = lines(out)
     .map(l => l.match(/^FAILED (\d+) (.*)$/))
     .find(Boolean);
@@ -200,7 +231,7 @@ async function recover({ id, volume }) {
     const name = `recover-data-${Date.now()}`;
     let out;
     try {
-      out = await shell(copyCommand(name, candidate.name, target), {
+      out = await shell(copyCommand(name, candidate.name, target, newTmpSuffix()), {
         timeout: COPY_TIMEOUT
       });
     } catch (e) {
@@ -214,6 +245,9 @@ async function recover({ id, volume }) {
     }
     const failedLine = parseFailed(out);
     if (failedLine) throw failed(failedLine);
+    if (!/^FILES \d+$/m.test(out)) {
+      throw failed("the copy did not report what it copied");
+    }
     const outLines = lines(out);
     const sizeLine = outLines.find(l => /^\d+\s+\/to$/.test(l));
     const filesMatch = outLines.map(l => l.match(/^FILES (\d+)$/)).find(Boolean);
@@ -267,4 +301,4 @@ async function recover({ id, volume }) {
 
 module.exports = recoverLostData;
 module.exports.copyCommand = copyCommand;
-module.exports.COPY_SCRIPT = COPY_SCRIPT;
+module.exports.copyScript = copyScript;

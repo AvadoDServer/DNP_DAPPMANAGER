@@ -607,7 +607,8 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
   });
 
   describe("recoverLostData", () => {
-    const { COPY_SCRIPT } = require("calls/recoverLostData");
+    const { copyScript } = require("calls/recoverLostData");
+    const suffixOf = cmd => cmd.match(/(\.avado-recover-tmp-[0-9a-f]{8})"/)[1];
     const old = "rocketpool-avado-dnp-dappnode-eth_rocketpool";
     const base = () => ({ volumes: [RP_LIVE, TEKU_LIVE, old], probe: { [old]: full(["data"], 2048) } });
     const recoverCalls = t => t.commands.filter(c => c.includes("avado-recover-tmp"));
@@ -671,7 +672,7 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       expect(at("avado-recover-tmp")).to.be.lessThan(at("UP"));
       expect(copy[0].args[0]).to.match(new RegExp(`^docker run --rm --name recover-data-\\d+ `));
       expect(copy[0].args[0].replace(/recover-data-\d+/, "recover-data-N")).to.equal(
-        `docker run --rm --name recover-data-N -v ${old}:/from:ro -v ${RP_LIVE}:/to busybox sh -c '${COPY_SCRIPT}'`
+        `docker run --rm --name recover-data-N -v ${old}:/from:ro -v ${RP_LIVE}:/to busybox sh -c '${copyScript(suffixOf(copy[0].args[0]))}'`
       );
       expect(copy[0].args[1]).to.deep.equal({ timeout: 10 * 60 * 1000 });
 
@@ -761,12 +762,68 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
     });
 
     it("the copy script walks with -print0, copies through a temporary name and never deletes", () => {
-      expect(COPY_SCRIPT).to.not.include("'");
-      expect(COPY_SCRIPT).to.include("find . -mindepth 1 -print0");
-      expect(COPY_SCRIPT).to.include('read -r -d ""');
-      expect(COPY_SCRIPT).to.include('cp -af "$f" "$t" && mv -n "$t" "/to/$f"');
-      expect(COPY_SCRIPT).to.include('[ -L "/to/$p" ]');
-      expect(COPY_SCRIPT).to.not.match(/\brm\b|rmdir|unlink|--remove/);
+      const script = copyScript(".avado-recover-tmp-0a1b2c3d");
+      expect(script).to.not.include("'");
+      expect(script).to.include("find . -mindepth 1 -print0");
+      expect(script).to.include('read -r -d ""');
+      // a file goes to <name><suffix> first, then mv -n; mv -n returns 0 when
+      // it did not move, so the temporary name must be gone afterwards
+      expect(script).to.include('t="/to/$f.avado-recover-tmp-0a1b2c3d"');
+      expect(script).to.include(
+        'if [ -e "$t" ] || [ -L "$t" ]; then false; else cp -af "$f" "$t" && mv -n "$t" "/to/$f" && [ ! -e "$t" ] && [ ! -L "$t" ]; fi'
+      );
+      expect(script).to.include('[ -L "/to/$p" ]');
+      expect(script).to.not.match(/\brm\b|rmdir|unlink|--remove/);
+    });
+
+    it("the copy script checks the walk against an independent count", () => {
+      const script = copyScript(".avado-recover-tmp-0a1b2c3d");
+      expect(script).to.include('found=$(find . -type f -print0 | tr -cd "\\000" | wc -c)');
+      expect(script).to.include('if [ "$files" -ne "$found" ]; then echo "FAILED walk $files/$found"; exit 1; fi');
+      expect(script).to.include(
+        'if [ "$found" -gt 0 ] && [ $((copied+skipped)) = 0 ]; then echo "FAILED walk 0/$found"; exit 1; fi'
+      );
+    });
+
+    it("the copy script counts a kept key file only when it differs from the old one", () => {
+      const script = copyScript(".avado-recover-tmp-0a1b2c3d");
+      expect(script).to.include('if [ "$linked" = 1 ] || ! cmp -s "$f" "/to/$f"; then');
+    });
+
+    it("refuses a temporary suffix that is not .avado-recover-tmp-<8 hex>", () => {
+      for (const bad of ["", ".avado-recover-tmp", ".avado-recover-tmp-0a1b2c3", ".avado-recover-tmp-0a1b2c3d;x", ".x-0a1b2c3d"]) {
+        expect(() => copyScript(bad), bad).to.throw();
+      }
+    });
+
+    it("uses a new random temporary suffix for every run", async () => {
+      const suffixes = [];
+      for (let i = 0; i < 3; i++) {
+        const t = setup(base());
+        await t.recoverLostData({ id: RP, volume: old });
+        suffixes.push(suffixOf(recoverCalls(t)[0]));
+      }
+      expect(new Set(suffixes).size).to.equal(3);
+    });
+
+    it("fails with a plain message when the walk did not see every file, and does not remember the volume", async () => {
+      const err0 = Error("Command failed");
+      err0.stdout = "FILES 0\nSKIPPED 0 0\nFAILED walk 0/2\n";
+      err0.code = 1;
+      const t = setup(Object.assign(base(), { copy: err0 }));
+      const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err.message).to.equal(
+        "Recovering the data failed: only 0 of the 2 files in the old storage could be read. Nothing was deleted; contact AVADO support."
+      );
+      expect(t.store.lostDataRecovered).to.equal(undefined);
+      sinon.assert.calledOnce(t.docker.safe.compose.up);
+    });
+
+    it("fails when the copy output has no FILES line", async () => {
+      const t = setup(Object.assign(base(), { copy: "2048\t/to" }));
+      const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err.message).to.match(/^Recovering the data failed: the copy did not report what it copied\./);
+      expect(t.store.lostDataRecovered).to.equal(undefined);
     });
 
     it("refuses when the compose file is missing", async () => {
