@@ -5,7 +5,8 @@ const lostData = require("modules/lostData");
  *
  * @param {string} id DNP .eth name
  * @returns {object} result: LostDataEntry, `candidates: []` when there are
- * none (also for core packages and packages that are not installed)
+ * none (also for core packages and packages that are not installed).
+ * `recovered` lists volumes recoverLostData already copied from.
  */
 const findLostData = async ({ id }) => {
   if (!id) throw Error("kwarg id must be defined");
@@ -13,7 +14,8 @@ const findLostData = async ({ id }) => {
   const result = entries.find(e => e.package === id) || {
     package: id,
     live: [],
-    candidates: []
+    candidates: [],
+    recovered: []
   };
   return {
     message: result.candidates.length

@@ -23,10 +23,17 @@ const COPY_TIMEOUT = 10 * 60 * 1000;
  * exist in the target is copied with cp -a; an entry that exists is kept and
  * only its children are looked at. `&&` makes a failed cp or a MISSING file
  * end the script with a non-zero exit.
+ *
+ * Before copying, the files that already exist in the target (and so are
+ * kept, not copied) are counted: `SKIPPED <files> <names with wallet or
+ * password>`. Only the counts are printed, never the list, so a big volume
+ * cannot overflow the output buffer.
  */
 const copyCommand = (name, volume, target) =>
   `docker run --rm --name ${name} -v ${volume}:/from:ro -v ${target}:/to busybox sh -c '` +
-  `cd /from && find . -mindepth 1 | while IFS= read -r f; do [ -e "/to/$f" ] || [ -L "/to/$f" ] || cp -an "$f" "/to/$f" || exit 1; done` +
+  `cd /from && find . -type f | while IFS= read -r f; do if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then echo "$f"; fi; done > /tmp/skipped` +
+  ` && echo "SKIPPED $(wc -l < /tmp/skipped) $(grep -ciE "wallet|password" /tmp/skipped)"` +
+  ` && find . -mindepth 1 | while IFS= read -r f; do [ -e "/to/$f" ] || [ -L "/to/$f" ] || cp -an "$f" "/to/$f" || exit 1; done` +
   ` && find . -type f | while IFS= read -r f; do [ -e "/to/$f" ] || { echo "MISSING $f"; exit 1; }; done` +
   ` && find . -type f | wc -l && du -sk /to'`;
 
@@ -42,7 +49,6 @@ const lines = s =>
 function firstLine(e) {
   const missing = lines(e.stdout).find(l => l.startsWith("MISSING "));
   if (missing) return missing;
-  if (/timed out/.test(e.message || "")) return "it took longer than 10 minutes";
   const stderr = lines(e.stderr)[0];
   if (stderr) return stderr;
   return (
@@ -50,6 +56,12 @@ function firstLine(e) {
     "unknown error"
   );
 }
+
+const TIMED_OUT = Error(
+  "Recovering the data took longer than 10 minutes and was stopped. Files already copied were kept; contact AVADO support."
+);
+const SKIPPED_WARNING =
+  "Some files already existed in the app's storage and were kept; the copy from the old storage was not used for them.";
 
 const failed = line =>
   Error(
@@ -118,6 +130,8 @@ const recoverLostData = async ({ id, volume }) => {
   let error = null;
   let files = 0;
   let sizeKb = 0;
+  let skipped = 0;
+  let keyFilesSkipped = false;
   try {
     log(`Stopping ${title}`);
     await docker.compose.stop(dcPath, { timeout: 300 });
@@ -135,6 +149,10 @@ const recoverLostData = async ({ id, volume }) => {
     } catch (e) {
       logs.error(`recoverLostData ${id}: copy from ${volume} failed: ${e.message} ${e.stdout || ""}`);
       await shell(`docker rm -f ${name}`).catch(() => {});
+      // utils/shell turns a timeout into `cmd "..." timed out (<ms> ms)`
+      if (/timed out \(\d+ ms\)$/.test(e.message || "")) {
+        throw Error(TIMED_OUT.message);
+      }
       throw failed(firstLine(e));
     }
     const missing = lines(out).find(l => l.startsWith("MISSING "));
@@ -145,6 +163,19 @@ const recoverLostData = async ({ id, volume }) => {
     const filesLine = fromEnd.find(l => /^\d+$/.test(l));
     files = filesLine ? parseInt(filesLine, 10) : 0;
     sizeKb = sizeLine ? parseInt(sizeLine, 10) : 0;
+    const skippedMatch = lines(out)
+      .map(l => l.match(/^SKIPPED (\d+) (\d+)$/))
+      .find(Boolean);
+    skipped = skippedMatch ? parseInt(skippedMatch[1], 10) : 0;
+    keyFilesSkipped = skippedMatch ? parseInt(skippedMatch[2], 10) > 0 : false;
+
+    // Never offer this volume again; a failed write must not fail the
+    // recovery, which has already happened
+    try {
+      await lostData.markRecovered(volume, id);
+    } catch (e) {
+      logs.error(`recoverLostData ${id}: cannot remember ${volume}: ${e.message}`);
+    }
   } catch (e) {
     error = e;
   }
@@ -170,7 +201,10 @@ const recoverLostData = async ({ id, volume }) => {
     message,
     logMessage: true,
     userAction: true,
-    result: { files, sizeKb }
+    result: Object.assign(
+      { files, sizeKb, skipped },
+      skipped > 0 && keyFilesSkipped ? { warning: SKIPPED_WARNING } : {}
+    )
   };
 };
 

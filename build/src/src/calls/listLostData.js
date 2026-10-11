@@ -6,7 +6,8 @@ const lostData = require("modules/lostData");
  *
  * @returns {object} result: LostDataEntry[], only packages with candidates
  * LostDataEntry = { package, title, live: [{ name, mountPath }],
- *   candidates: [{ name, anonymous, createdAt, entries, sizeKb, target }] }
+ *   candidates: [{ name, anonymous, createdAt, entries, sizeKb, target }],
+ *   recovered: [{ volume, at }] }
  */
 const listLostData = async () => {
   const entries = await lostData.scan();

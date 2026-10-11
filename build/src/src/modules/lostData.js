@@ -1,6 +1,7 @@
 const shell = require("utils/shell");
 const dockerList = require("modules/dockerList");
 const { shortNameCapitalized } = require("utils/strings");
+const db = require("db");
 const logs = require("logs.js")(module);
 
 /**
@@ -19,6 +20,8 @@ const logs = require("logs.js")(module);
 const VOLUME_REGEX = /^[A-Za-z0-9_.-]+$/;
 const ANONYMOUS_REGEX = /^[0-9a-f]{64}$/;
 const PROBE_TIMEOUT = 5 * 60 * 1000;
+// db key: [{ volume, package, at }] of volumes recoverLostData copied from
+const RECOVERED_KEY = "lostDataRecovered";
 
 const alnum = s => String(s).replace(/[^a-z0-9]/g, "");
 const shortOf = name => name.slice(name.lastIndexOf("_") + 1);
@@ -57,10 +60,37 @@ async function createdAt(volume) {
 }
 
 /**
+ * Volumes recoverLostData already copied from. They stay on disk (nothing is
+ * ever deleted), so without this list they would be offered again forever.
+ * @returns {Promise<Array<{volume, package, at}>>}
+ */
+async function getRecovered() {
+  try {
+    const list = await db.get(RECOVERED_KEY);
+    return Array.isArray(list)
+      ? list.filter(r => r && typeof r.volume === "string")
+      : [];
+  } catch (e) {
+    logs.warn(`lostData: cannot read ${RECOVERED_KEY}: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Remembers that the data of `volume` was recovered into package `id`
+ */
+async function markRecovered(volume, id) {
+  const list = (await getRecovered()).filter(r => r.volume !== volume);
+  list.push({ volume, package: id, at: new Date().toISOString() });
+  await db.set(RECOVERED_KEY, list);
+}
+
+/**
  * @param {object} [options]
  * @param {string} [options.id] limit the scan to this package
- * @returns {Promise<Array<{package, title, live, candidates}>>} one entry per
- * installed non-core package (only `id` when given), candidates may be empty
+ * @returns {Promise<Array<{package, title, live, candidates, recovered}>>}
+ * one entry per installed non-core package (only `id` when given),
+ * candidates and recovered may be empty
  */
 async function scan({ id } = {}) {
   // Volumes first: a volume created after this point (an install in
@@ -80,9 +110,13 @@ async function scan({ id } = {}) {
     for (const v of c.volumes || []) if (v.name) mounted.add(v.name);
   }
 
+  // Volumes already recovered are never offered again
+  const recovered = await getRecovered();
+  const recoveredNames = new Set(recovered.map(r => r.volume));
+
   const unused = [];
   for (const name of allVolumes) {
-    if (mounted.has(name)) continue;
+    if (mounted.has(name) || recoveredNames.has(name)) continue;
     if (!isValidVolume(name)) {
       logs.warn(`lostData: ignoring volume with unexpected name ${JSON.stringify(name)}`);
       continue;
@@ -174,7 +208,10 @@ async function scan({ id } = {}) {
         entries: c.entries,
         sizeKb: c.sizeKb,
         target: c.target
-      }))
+      })),
+      recovered: recovered
+        .filter(r => r.package === name)
+        .map(r => ({ volume: r.volume, at: r.at || null }))
     });
   }
   return entries;
@@ -182,5 +219,6 @@ async function scan({ id } = {}) {
 
 module.exports = {
   scan,
+  markRecovered,
   VOLUME_REGEX
 };

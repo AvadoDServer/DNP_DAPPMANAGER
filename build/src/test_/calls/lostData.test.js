@@ -58,6 +58,7 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
    * opts.probe: { [volume]: { entries, kb } | Error }
    * opts.inspect: { [volume]: string | Error }
    * opts.copy: stdout of the copy command, or an Error
+   * opts.db: initial content of the dappmanager db
    */
   function setup(opts = {}) {
     const commands = [];
@@ -81,7 +82,7 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       }
       if (cmd.includes("cp -an")) {
         if (opts.copy instanceof Error) throw opts.copy;
-        return opts.copy !== undefined ? opts.copy : "12\n2048\t/to";
+        return opts.copy !== undefined ? opts.copy : "SKIPPED 0 0\n12\n2048\t/to";
       }
       if (cmd.startsWith("docker rm -f recover-data-")) return "";
       throw Error(`unexpected command ${cmd}`);
@@ -92,10 +93,18 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       listMountedVolumeNames: sinon.stub().resolves(opts.otherMounts || [])
     };
     const logs = { info: sinon.fake(), warn: sinon.fake(), error: sinon.fake(), debug: sinon.fake() };
+    const store = Object.assign({}, opts.db || {});
+    const db = {
+      get: sinon.fake(async key => store[key]),
+      set: sinon.fake(async (key, value) => {
+        store[key] = value;
+      })
+    };
     const lostData = proxyquire("modules/lostData", {
       "utils/shell": shell,
       "modules/dockerList": dockerList,
-      "logs.js": () => logs
+      "logs.js": () => logs,
+      db
     });
     // stop and up are recorded in `commands` too, to check the order
     const docker = {
@@ -121,6 +130,8 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       recoverLostData: proxyquire("calls/recoverLostData", deps),
       shell,
       commands,
+      db,
+      store,
       docker,
       dockerList,
       logs,
@@ -453,13 +464,15 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       expect(copy[0].args[0]).to.match(new RegExp(`^docker run --rm --name recover-data-\\d+ `));
       expect(copy[0].args[0].replace(/recover-data-\d+/, "recover-data-N")).to.equal(
         `docker run --rm --name recover-data-N -v ${old}:/from:ro -v ${RP_LIVE}:/to busybox sh -c '` +
-          `cd /from && find . -mindepth 1 | while IFS= read -r f; do [ -e "/to/$f" ] || [ -L "/to/$f" ] || cp -an "$f" "/to/$f" || exit 1; done` +
+          `cd /from && find . -type f | while IFS= read -r f; do if [ -e "/to/$f" ] || [ -L "/to/$f" ]; then echo "$f"; fi; done > /tmp/skipped` +
+          ` && echo "SKIPPED $(wc -l < /tmp/skipped) $(grep -ciE "wallet|password" /tmp/skipped)"` +
+          ` && find . -mindepth 1 | while IFS= read -r f; do [ -e "/to/$f" ] || [ -L "/to/$f" ] || cp -an "$f" "/to/$f" || exit 1; done` +
           ` && find . -type f | while IFS= read -r f; do [ -e "/to/$f" ] || { echo "MISSING $f"; exit 1; }; done` +
           ` && find . -type f | wc -l && du -sk /to'`
       );
       expect(copy[0].args[1]).to.deep.equal({ timeout: 10 * 60 * 1000 });
 
-      expect(res.result).to.deep.equal({ files: 12, sizeKb: 2048 });
+      expect(res.result).to.deep.equal({ files: 12, sizeKb: 2048, skipped: 0 });
       expect(res.message).to.equal(`Recovered 12 files into ${RP_LIVE} from ${old}`);
       expect(res.logMessage).to.equal(true);
       expect(res.userAction).to.equal(true);
@@ -519,6 +532,99 @@ describe("Call functions: listLostData, findLostData, recoverLostData", function
       const err = await expectThrow(t.recoverLostData({ id: TEKU, volume: old }));
       expect(err.message).to.match(/Nothing was changed/);
       sinon.assert.notCalled(t.docker.compose.stop);
+    });
+
+    it("remembers the recovered volume: no longer a candidate, listed under recovered", async () => {
+      const t = setup(base());
+      await t.recoverLostData({ id: RP, volume: old });
+      expect(t.store.lostDataRecovered).to.have.length(1);
+      expect(t.store.lostDataRecovered[0]).to.include({ volume: old, package: RP });
+      expect(t.store.lostDataRecovered[0].at).to.be.a("string");
+
+      const probesBefore = probed(t).length;
+      const { result } = await t.findLostData({ id: RP });
+      expect(result.candidates).to.deep.equal([]);
+      expect(result.recovered).to.deep.equal([
+        { volume: old, at: t.store.lostDataRecovered[0].at }
+      ]);
+      // a recovered volume is not even probed again
+      expect(probed(t).length).to.equal(probesBefore);
+      expect((await t.listLostData()).result).to.deep.equal([]);
+      // and cannot be recovered a second time
+      const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err.message).to.equal(
+        "That volume is not on the list any more. Reload the page and try again."
+      );
+    });
+
+    it("keeps other recovered entries and shows each under its own package", async () => {
+      const other = "rocketpoolavado-dnp-dappnode-eth_rocketpool";
+      const t = setup(
+        Object.assign(base(), {
+          volumes: [RP_LIVE, TEKU_LIVE, old, other],
+          probe: { [old]: full(["data"], 2048), [other]: full(["data"]) },
+          db: {
+            lostDataRecovered: [
+              { volume: "tekuavadodnpdappnodeeth_old_data", package: TEKU, at: "2026-10-01T00:00:00.000Z" },
+              { volume: other, package: RP, at: "2026-10-02T00:00:00.000Z" }
+            ]
+          }
+        })
+      );
+      const before = await t.findLostData({ id: RP });
+      expect(before.result.candidates.map(c => c.name)).to.deep.equal([old]);
+      expect(before.result.recovered).to.deep.equal([
+        { volume: other, at: "2026-10-02T00:00:00.000Z" }
+      ]);
+      await t.recoverLostData({ id: RP, volume: old });
+      expect(t.store.lostDataRecovered.map(r => r.volume)).to.deep.equal([
+        "tekuavadodnpdappnodeeth_old_data",
+        other,
+        old
+      ]);
+      const teku = await t.findLostData({ id: TEKU });
+      expect(teku.result.recovered.map(r => r.volume)).to.deep.equal([
+        "tekuavadodnpdappnodeeth_old_data"
+      ]);
+    });
+
+    it("does not remember a volume when the copy failed", async () => {
+      const t = setup(Object.assign(base(), { copy: "SKIPPED 0 0\nMISSING ./x\n3\n10\t/to" }));
+      await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(t.store.lostDataRecovered).to.equal(undefined);
+    });
+
+    it("reports files that already existed as skipped, without a warning", async () => {
+      const t = setup(Object.assign(base(), { copy: "SKIPPED 3 0\n12\n2048\t/to" }));
+      const res = await t.recoverLostData({ id: RP, volume: old });
+      expect(res.result).to.deep.equal({ files: 12, sizeKb: 2048, skipped: 3 });
+    });
+
+    it("warns when a kept file is named like a wallet or password", async () => {
+      const t = setup(Object.assign(base(), { copy: "SKIPPED 3 1\n12\n2048\t/to" }));
+      const res = await t.recoverLostData({ id: RP, volume: old });
+      expect(res.result).to.deep.equal({
+        files: 12,
+        sizeKb: 2048,
+        skipped: 3,
+        warning:
+          "Some files already existed in the app's storage and were kept; the copy from the old storage was not used for them."
+      });
+    });
+
+    it("names the 10 minute limit when the copy times out, and still starts the package", async () => {
+      const cmd = "docker run --rm --name recover-data-1 -v a:/from:ro -v b:/to busybox sh -c '...'";
+      const t = setup(Object.assign(base(), { copy: Error(`cmd "${cmd}" timed out (600000 ms)`) }));
+      const err = await expectThrow(t.recoverLostData({ id: RP, volume: old }));
+      expect(err.message).to.equal(
+        "Recovering the data took longer than 10 minutes and was stopped. Files already copied were kept; contact AVADO support."
+      );
+      expect(t.commands.some(c => c.startsWith("docker rm -f recover-data-"))).to.equal(true);
+      sinon.assert.calledOnce(t.docker.safe.compose.up);
+      expect(t.commands.indexOf("UP")).to.be.greaterThan(
+        t.commands.findIndex(c => c.startsWith("docker rm -f recover-data-"))
+      );
+      expect(t.store.lostDataRecovered).to.equal(undefined);
     });
   });
 });
