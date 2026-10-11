@@ -21,6 +21,20 @@ async function listContainers() {
   return containers.map(format).filter(pkg => pkg.isDnp || pkg.isCore);
 }
 
+/**
+ * Names of the volumes mounted by ANY container, running or not, including
+ * containers that are not packages (listContainers leaves those out)
+ * @returns {Promise<string[]>}
+ */
+async function listMountedVolumeNames() {
+  const containers = await dockerRequest("get", "/containers/json?all=true");
+  const names = new Set();
+  for (const c of containers || []) {
+    for (const m of c.Mounts || []) if (m.Name) names.add(m.Name);
+  }
+  return [...names];
+}
+
 async function runningPackagesInfo() {
   const containers = await listContainers();
   const containersObject = {};
@@ -114,10 +128,11 @@ function format(c) {
     name: name,
     shortName: shortName(name),
     ports: c.Ports,
-    volumes: c.Mounts.map(({ Type, Name, Source }) => ({
+    volumes: c.Mounts.map(({ Type, Name, Source, Destination }) => ({
       type: Type,
       name: Name,
-      path: Source
+      path: Source,
+      mountPath: Destination
     })),
     state: c.State,
     running: !/^Exited /i.test(c.Status)
@@ -126,5 +141,6 @@ function format(c) {
 
 module.exports = {
   listContainers,
+  listMountedVolumeNames,
   runningPackagesInfo
 };
