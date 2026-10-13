@@ -47,7 +47,8 @@ describe("Module: ipfsNode and call getIpfsHealth", function() {
       restartCount: 0,
       restartsLastHour: 0,
       startedAt: "2026-10-13T08:00:00Z",
-      lastLogLines: []
+      lastLogLines: [],
+      missingSince: null
     });
     expect(t.commands).to.deep.equal([`docker inspect ${CONTAINER}`]);
   });
@@ -92,6 +93,18 @@ describe("Module: ipfsNode and call getIpfsHealth", function() {
     const h = await t.ipfsNode.readHealth();
     expect(h.exists).to.equal(false);
     expect(h.lastLogLines).to.deep.equal([]);
+  });
+
+  it("missingSince: when the container was first found missing, null again once it is back", async () => {
+    let out = Object.assign(Error("Command failed"), { stderr: "Error: No such object: x" });
+    const t = setup({ inspect: () => out });
+    const t0 = Date.parse("2026-10-13T08:00:00Z");
+    expect((await t.ipfsNode.readHealth({ now: t0 })).missingSince).to.equal("2026-10-13T08:00:00.000Z");
+    expect((await t.ipfsNode.readHealth({ now: t0 + 90 * 1000 })).missingSince).to.equal("2026-10-13T08:00:00.000Z");
+    out = inspectOut();
+    expect((await t.ipfsNode.readHealth({ now: t0 + 100 * 1000 })).missingSince).to.equal(null);
+    out = Object.assign(Error("Command failed"), { stderr: "Error: No such object: x" });
+    expect((await t.ipfsNode.readHealth({ now: t0 + 200 * 1000 })).missingSince).to.equal("2026-10-13T08:03:20.000Z");
   });
 
   it("another docker error is thrown", async () => {

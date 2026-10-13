@@ -7,7 +7,10 @@ const operations = require("modules/operations");
  * inspect`, plus `docker logs --tail 10` only when IPFS is not healthy.
  *
  * @returns {object} result: { exists, running, restarting, restartCount,
- *   restartsLastHour, startedAt, lastLogLines, resetRunning }
+ *   restartsLastHour, startedAt, lastLogLines, missingSince, resetRunning }
+ *   missingSince: ISO date this process first found no IPFS container,
+ *     null while there is one (a restart or update of IPFS removes it for a
+ *     few seconds)
  *   restartCount: Docker's count since the container was created
  *   restartsLastHour: counted from earlier calls of this DAPPMANAGER
  *     process (0 until a second call)

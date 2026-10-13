@@ -90,6 +90,10 @@ async function countPeers() {
 
 // Docker's RestartCount, sampled on every readHealth: { at, containerId, restartCount }
 let samples = [];
+// When readHealth first found no IPFS container (ms), null while there is one.
+// An update or a restart of IPFS leaves it absent for a few seconds; the
+// Admin only reports it missing once this is old enough.
+let missingSince = null;
 
 /**
  * Restarts in the last hour, from the samples of the same container (a new
@@ -117,7 +121,9 @@ const logLines = out =>
  * The IPFS container's state. Cheap: one `docker inspect`, plus the last log
  * lines only when it is not healthy.
  * @returns {Promise<object>} { exists, running, restarting, restartCount,
- *   restartsLastHour, startedAt, lastLogLines }
+ *   restartsLastHour, startedAt, lastLogLines, missingSince }
+ *   missingSince: ISO date this process first found no container, null
+ *   while there is one
  */
 async function readHealth({ now = Date.now() } = {}) {
   let info;
@@ -126,8 +132,10 @@ async function readHealth({ now = Date.now() } = {}) {
     info = (JSON.parse(out) || [])[0];
   } catch (e) {
     if (/no such (object|container)/i.test(`${e.message} ${e.stderr || ""}`)) {
+      if (missingSince === null) missingSince = now;
       return {
         exists: false,
+        missingSince: new Date(missingSince).toISOString(),
         running: false,
         restarting: false,
         restartCount: 0,
@@ -139,6 +147,7 @@ async function readHealth({ now = Date.now() } = {}) {
     throw e;
   }
   if (!info || !info.State) throw Error("Unexpected docker inspect output");
+  missingSince = null;
   const state = info.State;
   const restartCount = Number(info.RestartCount) || 0;
   const restarting = state.Restarting === true || state.Status === "restarting";
@@ -163,13 +172,15 @@ async function readHealth({ now = Date.now() } = {}) {
     restartCount,
     restartsLastHour: lastHour,
     startedAt: state.StartedAt || null,
-    lastLogLines
+    lastLogLines,
+    missingSince: null
   };
 }
 
 // Tests only
 function _resetSamples() {
   samples = [];
+  missingSince = null;
 }
 
 module.exports = {

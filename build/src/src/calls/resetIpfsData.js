@@ -164,14 +164,25 @@ async function reset() {
     if (!DATA_VOLUME_REGEX.test(volume)) {
       throw Error("IPFS does not store its data in the way this tool expects. Nothing was changed.");
     }
-    if (!(await volumeExists(volume))) volume = null;
+    let found;
+    try {
+      found = await volumeExists(volume);
+    } catch (e) {
+      logs.error(`resetIpfsData: cannot check ${volume}: ${e.message}`);
+      throw Error("Could not check the IPFS storage. Nothing was changed.");
+    }
+    if (!found) volume = null;
     logs.warn(`resetIpfsData: no IPFS container; ${volume ? `emptying ${volume}` : "no data volume either"}, then starting it`);
   }
 
-  // Remembered until IPFS has been started again (recoverInterruptedReset)
-  await db.set(RUNNING_KEY, { at: new Date().toISOString() }).catch(e =>
-    logs.warn(`resetIpfsData: cannot write ${RUNNING_KEY}: ${e.message}`)
-  );
+  // Remembered until IPFS has been started again (recoverInterruptedReset).
+  // Without it an interrupted reset could leave IPFS stopped: no reset then.
+  try {
+    await db.set(RUNNING_KEY, { at: new Date().toISOString() });
+  } catch (e) {
+    logs.error(`resetIpfsData: cannot write ${RUNNING_KEY}: ${e.message}`);
+    throw Error("Could not prepare the reset. Nothing was changed.");
+  }
 
   // 2.-3. Stop, delete the init marker, measure, empty. The container is
   // stopped, never removed: a stopped restart:always container comes back

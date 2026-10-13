@@ -45,6 +45,9 @@ describe("Call function: resetIpfsData", function() {
     const shell = sinon.stub().callsFake(async cmd => {
       commands.push(cmd);
       if (cmd.startsWith("docker volume inspect")) {
+        if (opts.volumeInspectFails) {
+          throw Object.assign(Error(`Command failed: ${cmd}`), { stderr: "Cannot connect to the Docker daemon" });
+        }
         if (opts.volumeExists === false) {
           throw Object.assign(Error("Command failed"), { stderr: "Error: No such volume: x" });
         }
@@ -97,6 +100,7 @@ describe("Call function: resetIpfsData", function() {
     const db = {
       get: sinon.stub().callsFake(async () => pending),
       set: sinon.stub().callsFake(async (k, v) => {
+        if (opts.dbSetFails) throw Error("EROFS: read-only file system, open './dappmanagerdb.json'");
         pending = v;
       }),
       remove: sinon.stub().callsFake(async () => {
@@ -238,6 +242,25 @@ describe("Call function: resetIpfsData", function() {
     expect(t.commands[0]).to.equal(`docker volume inspect --format '{{.Name}}' ${EXPECTED_VOL}`);
     expect(t.commands.filter(c => c.includes("rm -rf"))).to.have.length(1);
     expectSafe(t, EXPECTED_VOL);
+  });
+
+  it("IPFS container missing and the volume cannot be checked: plain error, nothing changed", async () => {
+    const t = setup({ containers: [], volumeInspectFails: true });
+    const { err } = await run(t);
+    expect(err.message).to.equal("Could not check the IPFS storage. Nothing was changed.");
+    expect(err.message).to.not.include("docker");
+    sinon.assert.notCalled(t.docker.compose.up);
+    sinon.assert.notCalled(t.db.set);
+  });
+
+  it("the reset cannot be remembered: refused before IPFS is stopped", async () => {
+    const t = setup({ dbSetFails: true });
+    const { err } = await run(t);
+    expect(err.message).to.equal("Could not prepare the reset. Nothing was changed.");
+    sinon.assert.notCalled(t.docker.compose.stop);
+    sinon.assert.notCalled(t.docker.compose.up);
+    sinon.assert.notCalled(t.shell);
+    expect(operations.list()).to.deep.equal([]);
   });
 
   it("IPFS container and volume both missing: only starts IPFS", async () => {

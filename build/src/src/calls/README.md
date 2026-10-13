@@ -238,6 +238,10 @@ restarted in the last hour. It is a call of its own rather than a part of
                        // until a second call; a new container counts from 0
     startedAt,         // Docker State.StartedAt or null
     lastLogLines,      // <= 10 lines, colours removed, each <= 300 characters
+    missingSince,      // ISO date this process first found no container,
+                       // null while there is one (an update or restart of
+                       // IPFS removes it for a few seconds; the Admin waits
+                       // 60 s before it reports IPFS missing)
     resetRunning       // resetIpfsData is running now
   }
 }
@@ -325,6 +329,14 @@ package files again when they are needed.
   }
 }
 ```
+
+Errors before anything is changed (plain words, the docker output only in the
+log):
+- `Could not check the IPFS storage. Nothing was changed.` (container missing
+  and `docker volume inspect` failed for another reason than "no such volume")
+- `Could not prepare the reset. Nothing was changed.` (the db key
+  `ipfsResetRunning` could not be written: without it an interrupted reset
+  could not be finished at the next start)
 
 Errors (IPFS is started again in every case after step 3):
 - `IPFS could not be stopped. Nothing was deleted; IPFS is being started again.`
