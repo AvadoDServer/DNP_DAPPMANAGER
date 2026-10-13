@@ -11,6 +11,7 @@ const parseManifestPorts = require("utils/parseManifestPorts");
 const getPath = require("utils/getPath");
 const shell = require("utils/shell");
 const { stringIncludes } = require("utils/strings");
+const operations = require("modules/operations");
 
 /**
  * Remove package data: docker down + disk files
@@ -20,6 +21,8 @@ const { stringIncludes } = require("utils/strings");
  */
 const removePackage = async ({ id, deleteVolumes = false }) => {
   if (!id) throw Error("kwarg id must be defined");
+  // IPFS must not be started or removed while its storage is emptied
+  operations.assertNotIpfsReset(id);
 
   const packageRepoDir = getPath.packageRepoDir(id, params);
 

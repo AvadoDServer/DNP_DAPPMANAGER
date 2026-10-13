@@ -1,6 +1,6 @@
 const expect = require("chai").expect;
 const shell = require("utils/shell");
-const { emptyCommand, leftCommand, sizeCommand } = require("calls/resetIpfsData");
+const { emptyCommand, leftCommand, sizeCommand, markerCommand } = require("calls/resetIpfsData");
 
 /**
  * Runs the real resetIpfsData busybox commands against a throwaway volume
@@ -55,6 +55,13 @@ describe("resetIpfsData empty step with REAL docker", function() {
   it("measures the volume", async () => {
     const out = await shell(sizeCommand(name("du"), VOL));
     expect(parseInt(out, 10)).to.be.at.least(1900);
+  });
+
+  it("deletes the init marker first and nothing else", async () => {
+    await shell(markerCommand(name("marker"), VOL));
+    const left = (await shell(leftCommand(name("ls"), VOL))).split("\n");
+    expect(left).to.not.include("migrate3");
+    expect(left).to.include.members(["blocks", "config", "datastore", ".hidden", "..dots"]);
   });
 
   it("empties the volume, keeps the volume itself and leaves other volumes alone", async () => {

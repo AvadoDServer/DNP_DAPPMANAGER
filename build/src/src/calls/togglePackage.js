@@ -3,6 +3,7 @@ const parse = require("utils/parse");
 const params = require("params");
 const docker = require("modules/docker");
 const { eventBus, eventBusTag } = require("eventBus");
+const operations = require("modules/operations");
 
 /**
  * Stops or starts after fetching its status
@@ -12,6 +13,8 @@ const { eventBus, eventBusTag } = require("eventBus");
  */
 const togglePackage = async ({ id, timeout = 180 }) => {
   if (!id) throw Error("kwarg id must be defined");
+  // IPFS must not be started or removed while its storage is emptied
+  operations.assertNotIpfsReset(id);
 
   // A stopped DAPPMANAGER cannot start itself again
   if (id.includes("dappmanager.dnp.dappnode.eth")) {

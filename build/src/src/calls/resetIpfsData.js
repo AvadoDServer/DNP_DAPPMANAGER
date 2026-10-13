@@ -1,4 +1,6 @@
 const fs = require("fs");
+const path = require("path");
+const db = require("db");
 const getPath = require("utils/getPath");
 const params = require("params");
 const docker = require("modules/docker");
@@ -10,11 +12,21 @@ const logUi = require("utils/logUi");
 const logs = require("logs.js")(module);
 const { eventBus, eventBusTag } = require("eventBus");
 
-const { IPFS_ID, CONTAINER, DATA_MOUNT, DATA_VOLUME_REGEX } = ipfsNode;
+const { IPFS_ID, DATA_MOUNT, DATA_VOLUME_REGEX } = ipfsNode;
 
-const MEASURE_TIMEOUT = 30 * 60 * 1000;
+// Measuring is best effort and the confirm promises "a few minutes"
+const MEASURE_TIMEOUT = 5 * 60 * 1000;
+const CHECK_TIMEOUT = 5 * 60 * 1000;
 const EMPTY_TIMEOUT = 60 * 60 * 1000;
 const START_WAIT = 120 * 1000;
+
+// db key, set while a reset runs: a DAPPMANAGER that starts and finds it
+// set was stopped in the middle of one (recoverInterruptedReset)
+const RUNNING_KEY = "ipfsResetRunning";
+// start_ipfs (AVADO-DNP-ipfs) wipes the repo and runs `ipfs init` when this
+// file is missing, so deleting it first makes any interrupted reset end in
+// a clean new repo on the next start
+const MARKER = "/v/migrate3";
 
 const NOT_STARTED =
   "IPFS storage was emptied but IPFS did not start again. Restart your AVADO or contact AVADO support.";
@@ -36,12 +48,17 @@ const sizeCommand = (name, volume) => {
   assertVolume(volume);
   return `docker run --rm --name ${name} -v ${volume}:/v:ro busybox du -sk /v`;
 };
-// Deletes every entry of the volume root, hidden ones included, and keeps
-// the volume itself (its name, and the compose project it belongs to).
-// A pattern that matches nothing stays literal; rm -f ignores it.
+// Deletes only the init marker: from here on IPFS starts on a new repo
+const markerCommand = (name, volume) => {
+  assertVolume(volume);
+  return `docker run --rm --name ${name} -v ${volume}:/v busybox rm -f ${MARKER}`;
+};
+// Deletes every entry of the volume root, hidden ones included (the marker
+// first), and keeps the volume itself (its name, and the compose project it
+// belongs to). A pattern that matches nothing stays literal; rm -f ignores it.
 const emptyCommand = (name, volume) => {
   assertVolume(volume);
-  return `docker run --rm --name ${name} -v ${volume}:/v busybox sh -c 'rm -rf /v/* /v/.[!.]* /v/..?*'`;
+  return `docker run --rm --name ${name} -v ${volume}:/v busybox sh -c 'rm -f ${MARKER}; rm -rf /v/* /v/.[!.]* /v/..?*'`;
 };
 // Prints what is left in the volume root (nothing once it is empty)
 const leftCommand = (name, volume) => {
@@ -58,6 +75,26 @@ async function runNamed(kind, build, volume, timeout) {
     return await shell(build(name, volume), { timeout });
   } catch (e) {
     await shell(`docker rm -f ${name}`).catch(() => {});
+    throw e;
+  }
+}
+
+// The data volume compose uses for IPFS: <project>_ipfsdnpdappnodeeth_data,
+// with the project named the way modules/docker names it (legacy v1 rule)
+const expectedVolume = dcPath =>
+  `${path
+    .basename(path.dirname(path.resolve(dcPath)))
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")}_ipfsdnpdappnodeeth_data`;
+
+async function volumeExists(volume) {
+  try {
+    const out = await shell(`docker volume inspect --format '{{.Name}}' ${volume}`, {
+      timeout: 60 * 1000
+    });
+    return String(out).trim() === volume;
+  } catch (e) {
+    if (/no such volume/i.test(`${e.message} ${e.stderr || ""}`)) return false;
     throw e;
   }
 }
@@ -104,100 +141,106 @@ const resetIpfsData = async () => {
 async function reset() {
   const log = message => logUi({ id: IPFS_ID, name: IPFS_ID, message });
 
-  // 1. The container, its data volume and its compose file
-  const dnp = ((await dockerList.listContainers()) || []).find(
-    c => c.name === IPFS_ID && c.isCore
-  );
-  if (!dnp) {
-    throw Error("IPFS is not installed on this AVADO, so there is nothing to reset. Nothing was changed.");
-  }
-  const mounts = (dnp.volumes || []).filter(
-    v => v.type === "volume" && v.mountPath === DATA_MOUNT
-  );
-  if (mounts.length !== 1 || !DATA_VOLUME_REGEX.test(mounts[0].name || "")) {
-    throw Error("IPFS does not store its data in the way this tool expects. Nothing was changed.");
-  }
-  const volume = mounts[0].name;
+  // 1. The compose file, the container (it can be missing, e.g. after an
+  // interrupted update) and its data volume
   const dcPath = getPath.dockerCompose(IPFS_ID, params, true);
   if (!fs.existsSync(dcPath)) {
     throw Error("IPFS is missing its configuration. Nothing was changed.");
   }
+  const dnp = ((await dockerList.listContainers()) || []).find(
+    c => c.name === IPFS_ID && c.isCore
+  );
+  let volume;
+  if (dnp) {
+    const mounts = (dnp.volumes || []).filter(
+      v => v.type === "volume" && v.mountPath === DATA_MOUNT
+    );
+    if (mounts.length !== 1 || !DATA_VOLUME_REGEX.test(mounts[0].name || "")) {
+      throw Error("IPFS does not store its data in the way this tool expects. Nothing was changed.");
+    }
+    volume = mounts[0].name;
+  } else {
+    volume = expectedVolume(dcPath);
+    if (!DATA_VOLUME_REGEX.test(volume)) {
+      throw Error("IPFS does not store its data in the way this tool expects. Nothing was changed.");
+    }
+    if (!(await volumeExists(volume))) volume = null;
+    logs.warn(`resetIpfsData: no IPFS container; ${volume ? `emptying ${volume}` : "no data volume either"}, then starting it`);
+  }
 
-  // 2.-3. Stop, measure, empty. Once the stop has been sent, IPFS is always
-  // started again, and a failed start never hides the error before it.
+  // Remembered until IPFS has been started again (recoverInterruptedReset)
+  await db.set(RUNNING_KEY, { at: new Date().toISOString() }).catch(e =>
+    logs.warn(`resetIpfsData: cannot write ${RUNNING_KEY}: ${e.message}`)
+  );
+
+  // 2.-3. Stop, delete the init marker, measure, empty. The container is
+  // stopped, never removed: a stopped restart:always container comes back
+  // when Docker starts, so a power cut leaves IPFS in place. Once the stop
+  // has been sent IPFS is always started again, and a failed start never
+  // hides the error before it.
   let error = null;
   let removedKb = null;
   try {
-    log("Stopping IPFS");
-    try {
-      await docker.compose.stop(dcPath, { timeout: 300 });
-      // Only this container; never `compose down` (it can remove networks)
-      await shell(`docker rm -f ${CONTAINER}`, { timeout: 5 * 60 * 1000 });
-    } catch (e) {
-      logs.error(`resetIpfsData: stop failed: ${e.message}`);
-      throw Error("IPFS could not be stopped. Nothing was deleted; IPFS is being started again.");
+    if (dnp) {
+      log("Stopping IPFS");
+      try {
+        await docker.compose.stop(dcPath, { timeout: 300 });
+      } catch (e) {
+        logs.error(`resetIpfsData: stop failed: ${e.message}`);
+        throw Error("IPFS could not be stopped. Nothing was deleted; IPFS is being started again.");
+      }
     }
 
-    log("Measuring the IPFS storage");
-    try {
-      const out = await runNamed("du", sizeCommand, volume, MEASURE_TIMEOUT);
-      const kb = parseInt(String(out).trim().split(/\s+/)[0], 10);
-      removedKb = Number.isFinite(kb) ? kb : null;
-    } catch (e) {
-      logs.warn(`resetIpfsData: could not measure ${volume}: ${e.message}`);
-    }
+    if (volume) {
+      log("Deleting the IPFS storage");
+      try {
+        await runNamed("marker", markerCommand, volume, CHECK_TIMEOUT);
+      } catch (e) {
+        logs.error(`resetIpfsData: deleting ${MARKER} in ${volume} failed: ${e.message}`);
+        throw Error("Deleting the IPFS storage failed. IPFS is being started again.");
+      }
 
-    log("Deleting the IPFS storage");
-    try {
-      await runNamed("rm", emptyCommand, volume, EMPTY_TIMEOUT);
-    } catch (e) {
-      logs.error(`resetIpfsData: emptying ${volume} failed: ${e.message}`);
-      throw Error("Deleting the IPFS storage failed. IPFS is being started again.");
+      try {
+        const out = await runNamed("du", sizeCommand, volume, MEASURE_TIMEOUT);
+        const kb = parseInt(String(out).trim().split(/\s+/)[0], 10);
+        removedKb = Number.isFinite(kb) ? kb : null;
+      } catch (e) {
+        logs.warn(`resetIpfsData: could not measure ${volume}: ${e.message}`);
+      }
+
+      try {
+        await runNamed("rm", emptyCommand, volume, EMPTY_TIMEOUT);
+      } catch (e) {
+        logs.error(`resetIpfsData: emptying ${volume} failed: ${e.message}`);
+        throw Error("Deleting the IPFS storage failed. IPFS is being started again.");
+      }
+      let left;
+      try {
+        left = await runNamed("ls", leftCommand, volume, CHECK_TIMEOUT);
+      } catch (e) {
+        logs.error(`resetIpfsData: checking ${volume} failed: ${e.message}`);
+        throw Error("Could not check the IPFS storage after deleting it. IPFS is being started again.");
+      }
+      if (String(left || "").trim()) {
+        logs.error(`resetIpfsData: left in ${volume}: ${String(left).trim().split("\n").slice(0, 5).join(", ")}`);
+        throw Error("Some of the IPFS storage could not be deleted. IPFS is being started again.");
+      }
+      logs.info(`resetIpfsData: emptied ${volume}, ${removedKb === null ? "size unknown" : `${removedKb} KB`}`);
     }
-    let left;
-    try {
-      left = await runNamed("ls", leftCommand, volume, MEASURE_TIMEOUT);
-    } catch (e) {
-      logs.error(`resetIpfsData: checking ${volume} failed: ${e.message}`);
-      throw Error("Could not check the IPFS storage after deleting it. IPFS is being started again.");
-    }
-    if (String(left || "").trim()) {
-      logs.error(`resetIpfsData: left in ${volume}: ${String(left).trim().split("\n").slice(0, 5).join(", ")}`);
-      throw Error("Some of the IPFS storage could not be deleted. IPFS is being started again.");
-    }
-    logs.info(`resetIpfsData: emptied ${volume}, ${removedKb === null ? "size unknown" : `${removedKb} KB`}`);
   } catch (e) {
     error = e;
   }
 
-  // 4. Start, wait for the API, reconnect to the store nodes
+  // 4. Start (up -d starts the stopped container, or creates a missing
+  // one), wait for the API, reconnect to the store nodes
   log("Starting IPFS");
-  let startError = null;
-  let restarted = false;
-  let peersConnected = null;
-  let storePeersConnected = 0;
-  try {
-    await docker.compose.up(dcPath);
-  } catch (e) {
-    logs.error(`resetIpfsData: start failed: ${e.message}`);
-    startError = e;
-  }
-  if (!startError) {
-    restarted = await ipfsNode.waitForApi(START_WAIT);
-    if (restarted) {
-      log("Connecting to the AVADO store");
-      storePeersConnected = await ipfsNode.connectStorePeers();
-      peersConnected = await ipfsNode.countPeers();
-    } else {
-      const after = ((await dockerList.listContainers().catch(() => [])) || []).find(
-        c => c.name === IPFS_ID
-      );
-      // Not there or exited: it did not start. Running: still starting.
-      if (!after || !after.running) startError = Error("IPFS is not running");
-      logs.warn(`resetIpfsData: IPFS did not answer within ${START_WAIT / 1000} s (state ${after ? after.state : "missing"})`);
-    }
-  }
+  const started = await startAndWait(log);
+  await db.remove(RUNNING_KEY).catch(e =>
+    logs.warn(`resetIpfsData: cannot clear ${RUNNING_KEY}: ${e.message}`)
+  );
   eventBus.emit(eventBusTag.emitPackages);
+  const startError = started.error;
+  const { restarted, peersConnected, storePeersConnected } = started;
 
   if (error && startError) {
     const before = error.message
@@ -208,10 +251,11 @@ async function reset() {
   if (error) throw error;
   if (startError) throw Error(NOT_STARTED);
 
-  const deleted =
-    removedKb === null
-      ? "Deleted the IPFS storage."
-      : `Deleted ${formatKb(removedKb)} of IPFS storage.`;
+  const deleted = !volume
+    ? "IPFS was set up again."
+    : removedKb === null
+    ? "Deleted the IPFS storage."
+    : `Deleted ${formatKb(removedKb)} of IPFS storage.`;
   return {
     message: restarted
       ? `${deleted} IPFS is running again.`
@@ -222,7 +266,81 @@ async function reset() {
   };
 }
 
+/**
+ * compose up -d, then up to 2 minutes for the API. IPFS counts as started
+ * only when its container is in state "running" afterwards (not
+ * "restarting" or "created", which dockerList also calls running).
+ * @returns {Promise<{ error, restarted, peersConnected, storePeersConnected }>}
+ */
+async function startAndWait(log = () => {}) {
+  const res = { error: null, restarted: false, peersConnected: null, storePeersConnected: 0 };
+  const dcPath = getPath.dockerCompose(IPFS_ID, params, true);
+  try {
+    await docker.compose.up(dcPath);
+  } catch (e) {
+    logs.error(`resetIpfsData: start failed: ${e.message}`);
+    res.error = e;
+    return res;
+  }
+  const answered = await ipfsNode.waitForApi(START_WAIT);
+  const after = ((await dockerList.listContainers().catch(() => [])) || []).find(
+    c => c.name === IPFS_ID
+  );
+  const state = after ? after.state : "missing";
+  if (state !== "running") {
+    logs.error(`resetIpfsData: IPFS is not running after the start (state ${state})`);
+    res.error = Error(`IPFS is ${state}`);
+    return res;
+  }
+  if (!answered) {
+    logs.warn(`resetIpfsData: IPFS did not answer within ${START_WAIT / 1000} s`);
+    return res;
+  }
+  res.restarted = true;
+  log("Connecting to the AVADO store");
+  res.storePeersConnected = await ipfsNode.connectStorePeers();
+  res.peersConnected = await ipfsNode.countPeers();
+  return res;
+}
+
+/**
+ * At DAPPMANAGER start: a reset that this process's predecessor did not
+ * finish (it was restarted, or updated, in the middle) left IPFS stopped,
+ * and a stopped container is not started again by its restart policy until
+ * Docker itself restarts. Removes any busybox of that reset still running
+ * and starts IPFS. The init marker was deleted first, so IPFS sets up a new
+ * repo by itself.
+ */
+async function recoverInterruptedReset() {
+  let pending;
+  try {
+    pending = await db.get(RUNNING_KEY);
+  } catch (e) {
+    logs.warn(`resetIpfsData: cannot read ${RUNNING_KEY}: ${e.message}`);
+    return false;
+  }
+  if (!pending) return false;
+  logs.warn(`resetIpfsData: a reset started ${pending.at || "earlier"} did not finish; starting IPFS`);
+  try {
+    const ids = String(await shell("docker ps -aq --filter name=ipfs-reset-"))
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => /^[0-9a-f]+$/.test(l));
+    if (ids.length) await shell(`docker rm -f ${ids.join(" ")}`);
+  } catch (e) {
+    logs.warn(`resetIpfsData: cannot remove leftover reset containers: ${e.message}`);
+  }
+  const started = await operations.track("resetIpfsData", IPFS_ID, () => startAndWait());
+  if (started.error) logs.error(`resetIpfsData: IPFS did not start after an interrupted reset`);
+  await db.remove(RUNNING_KEY).catch(() => {});
+  eventBus.emit(eventBusTag.emitPackages);
+  return true;
+}
+
 module.exports = resetIpfsData;
 module.exports.sizeCommand = sizeCommand;
 module.exports.emptyCommand = emptyCommand;
 module.exports.leftCommand = leftCommand;
+module.exports.markerCommand = markerCommand;
+module.exports.recoverInterruptedReset = recoverInterruptedReset;
+module.exports.RUNNING_KEY = RUNNING_KEY;

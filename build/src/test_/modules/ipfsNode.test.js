@@ -168,6 +168,31 @@ describe("Module: ipfsNode and call getIpfsHealth", function() {
       expect(inside).to.equal(true);
       expect(operations.isRunning("installPackage")).to.equal(false);
     });
+    it("an install older than its maximum age (2 h) no longer counts as running", () => {
+      expect(operations.MAX_AGE.installPackage).to.equal(2 * 60 * 60 * 1000);
+      operations.begin("installPackage", "stalled.dnp.dappnode.eth");
+      operations.begin("recoverLostData", "b");
+      const later = Date.now() + 2 * 60 * 60 * 1000 + 1000;
+      expect(operations.list("installPackage", undefined, { now: later })).to.deep.equal([]);
+      // other kinds have no maximum age
+      expect(operations.list("recoverLostData", undefined, { now: later })).to.have.length(1);
+      expect(operations.list("installPackage", undefined, { now: Date.now() + 60 * 60 * 1000 })).to.have.length(1);
+    });
+
+    it("a real installPackage is registered while it runs, until it ends", async () => {
+      let release;
+      const installPackage = proxyquire("calls/installPackage", {
+        "utils/isSyncing": async () => false,
+        "modules/dappGet": () => new Promise((resolve, reject) => (release = reject))
+      });
+      const pending = installPackage({ id: "a.dnp.dappnode.eth" }).catch(() => {});
+      await new Promise(r => setTimeout(r, 0));
+      expect(operations.list("installPackage").map(op => op.id)).to.deep.equal(["a.dnp.dappnode.eth"]);
+      release(Error("stalled"));
+      await pending;
+      expect(operations.list("installPackage")).to.deep.equal([]);
+    });
+
     it("lists by kind and package; two installs at once are both listed", () => {
       const a = operations.begin("installPackage", "a");
       operations.begin("installPackage", "a");

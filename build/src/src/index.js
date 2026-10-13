@@ -38,6 +38,12 @@ require("./utils/getVersionData");
 // Create JWT
 calls.createJWT();
 
+// An IPFS storage reset interrupted by a restart of this process left IPFS
+// stopped: start it again
+calls.resetIpfsData
+  .recoverInterruptedReset()
+  .catch(e => logs.error(`Cannot recover an interrupted IPFS reset: ${e.stack}`));
+
 // serve local files from FILE_PATH (for JWT, certificates)
 const app = express();
 app.use(express.static(process.env.FILE_PATH));

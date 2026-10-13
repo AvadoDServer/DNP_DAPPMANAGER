@@ -13,6 +13,8 @@ describe("Call function: resetIpfsData", function() {
   const EXPORT = "dncore_ipfsdnpdappnodeeth_export";
   const params = { DNCORE_DIR: "test_files/DNCORE_ipfs", REPO_DIR: "test_files/" };
   const dcPath = getPath.dockerCompose(IPFS, params, true);
+  // The volume compose would use for that compose file (project "dncoreipfs")
+  const EXPECTED_VOL = "dncoreipfs_ipfsdnpdappnodeeth_data";
 
   const ipfsContainer = (o = {}) =>
     Object.assign(
@@ -33,15 +35,28 @@ describe("Call function: resetIpfsData", function() {
    * The call with docker, shell and the IPFS API stubbed.
    * opts.containers: listContainers result before the reset
    * opts.after: the IPFS container listContainers returns after the start
-   * opts.stopFails / rmFails / duFails / emptyFails / leftover / upFails
+   * opts.stopFails / markerFails / duFails / emptyFails / leftover / upFails
    * opts.answers: waitForApi result (default true)
+   * opts.volumeExists: `docker volume inspect` finds the volume (default true)
+   * opts.pending: what the db holds under ipfsResetRunning
    */
   function setup(opts = {}) {
     const commands = [];
     const shell = sinon.stub().callsFake(async cmd => {
       commands.push(cmd);
-      if (cmd === `docker rm -f ${CONTAINER}`) {
-        if (opts.rmFails) throw Error("rm failed");
+      if (cmd.startsWith("docker volume inspect")) {
+        if (opts.volumeExists === false) {
+          throw Object.assign(Error("Command failed"), { stderr: "Error: No such volume: x" });
+        }
+        return cmd.split(" ").pop();
+      }
+      if (cmd.startsWith("docker ps -aq --filter name=ipfs-reset-")) return opts.leftoverContainers || "";
+      if (cmd.includes("rm -rf /v/*")) {
+        if (opts.emptyFails) throw Error(`Command failed: ${cmd}\nrm: busy`);
+        return "";
+      }
+      if (cmd.endsWith("busybox rm -f /v/migrate3")) {
+        if (opts.markerFails) throw Error("marker failed");
         return "";
       }
       if (cmd.includes("du -sk /v")) {
@@ -53,7 +68,7 @@ describe("Call function: resetIpfsData", function() {
         return "";
       }
       if (cmd.includes("ls -A /v")) return opts.leftover || "";
-      if (/^docker rm -f ipfs-reset-/.test(cmd)) return "";
+      if (/^docker rm -f (ipfs-reset-|[0-9a-f]+)/.test(cmd)) return "";
       throw Error(`unexpected command ${cmd}`);
     });
     const docker = {
@@ -78,6 +93,16 @@ describe("Call function: resetIpfsData", function() {
         return opts.after === null ? [] : [opts.after || ipfsContainer({ state: "running" })];
       }
     };
+    let pending = opts.pending || null;
+    const db = {
+      get: sinon.stub().callsFake(async () => pending),
+      set: sinon.stub().callsFake(async (k, v) => {
+        pending = v;
+      }),
+      remove: sinon.stub().callsFake(async () => {
+        pending = null;
+      })
+    };
     const ipfsNode = {
       waitForApi: sinon.stub().resolves(opts.answers !== false),
       connectStorePeers: sinon.stub().resolves(1),
@@ -90,9 +115,10 @@ describe("Call function: resetIpfsData", function() {
       "modules/ipfsNode": ipfsNode,
       "utils/shell": shell,
       "utils/logUi": logUi,
+      db,
       params
     });
-    return { call, docker, shell, commands, ipfsNode, logUi };
+    return { call, docker, shell, commands, ipfsNode, logUi, db, pending: () => pending };
   }
 
   async function run(t) {
@@ -104,14 +130,16 @@ describe("Call function: resetIpfsData", function() {
   }
 
   // Nothing but the IPFS data volume is ever written to, and never removed
-  function expectSafe(t) {
+  function expectSafe(t, vol = VOL) {
     sinon.assert.notCalled(t.docker.compose.down);
     sinon.assert.notCalled(t.docker.compose.rm);
     sinon.assert.notCalled(t.docker.volume.rm);
     for (const cmd of t.commands) {
       expect(cmd).to.not.include(EXPORT);
       expect(cmd).to.not.match(/docker volume rm/);
-      if (cmd.includes("docker run")) expect(cmd).to.include(`-v ${VOL}:/v`);
+      if (cmd.includes("docker run")) expect(cmd).to.include(`-v ${vol}:/v`);
+      // the IPFS container is stopped, never removed
+      expect(cmd).to.not.include(CONTAINER);
     }
   }
 
@@ -143,13 +171,18 @@ describe("Call function: resetIpfsData", function() {
     sinon.assert.calledWith(t.docker.compose.up, dcPath);
     sinon.assert.calledOnce(t.ipfsNode.connectStorePeers);
     expect(t.ipfsNode.waitForApi.firstCall.args[0]).to.be.at.most(120 * 1000);
-    // stop, remove that one container, measure, empty, check, in this order
+    // init marker first, then measure, empty, check, in this order
     const steps = t.commands.map(c =>
-      c === `docker rm -f ${CONTAINER}` ? "rm" : c.includes("du -sk") ? "du" : c.includes("rm -rf") ? "empty" : c.includes("ls -A") ? "check" : c
+      c.includes("rm -rf") ? "empty" : c.includes("migrate3") ? "marker" : c.includes("du -sk") ? "du" : c.includes("ls -A") ? "check" : c
     );
-    expect(steps).to.deep.equal(["rm", "du", "empty", "check"]);
+    expect(steps).to.deep.equal(["marker", "du", "empty", "check"]);
+    sinon.assert.callOrder(t.docker.compose.stop, t.shell, t.docker.compose.up);
+    expect(t.commands[0]).to.match(/^docker run --rm --name ipfs-reset-marker-\d+-\d+ -v dncore_ipfsdnpdappnodeeth_data:\/v busybox rm -f \/v\/migrate3$/);
     const empty = t.commands.find(c => c.includes("rm -rf"));
-    expect(empty).to.match(/^docker run --rm --name ipfs-reset-rm-\d+-\d+ -v dncore_ipfsdnpdappnodeeth_data:\/v busybox sh -c 'rm -rf \/v\/\* \/v\/\.\[!\.\]\* \/v\/\.\.\?\*'$/);
+    expect(empty).to.match(/^docker run --rm --name ipfs-reset-rm-\d+-\d+ -v dncore_ipfsdnpdappnodeeth_data:\/v busybox sh -c 'rm -f \/v\/migrate3; rm -rf \/v\/\* \/v\/\.\[!\.\]\* \/v\/\.\.\?\*'$/);
+    // remembered while it ran, cleared at the end
+    expect(t.db.set.firstCall.args[0]).to.equal("ipfsResetRunning");
+    expect(t.pending()).to.equal(null);
     // measuring and checking mount the volume read-only
     for (const c of t.commands.filter(c => c.includes("du -sk") || c.includes("ls -A"))) {
       expect(c).to.include(`-v ${VOL}:/v:ro`);
@@ -195,13 +228,24 @@ describe("Call function: resetIpfsData", function() {
     });
   }
 
-  it("refuses when the IPFS container does not exist", async () => {
+  it("IPFS container missing, volume there: empties the volume compose uses and starts IPFS", async () => {
     const t = setup({ containers: [{ name: "other.dnp.dappnode.eth", volumes: [] }] });
-    const { err } = await run(t);
-    expect(err.message).to.equal("IPFS is not installed on this AVADO, so there is nothing to reset. Nothing was changed.");
+    const { res, err } = await run(t);
+    expect(err).to.equal(undefined);
+    expect(res.result.restarted).to.equal(true);
     sinon.assert.notCalled(t.docker.compose.stop);
-    sinon.assert.notCalled(t.docker.compose.up);
-    sinon.assert.notCalled(t.shell);
+    sinon.assert.calledOnce(t.docker.compose.up);
+    expect(t.commands[0]).to.equal(`docker volume inspect --format '{{.Name}}' ${EXPECTED_VOL}`);
+    expect(t.commands.filter(c => c.includes("rm -rf"))).to.have.length(1);
+    expectSafe(t, EXPECTED_VOL);
+  });
+
+  it("IPFS container and volume both missing: only starts IPFS", async () => {
+    const t = setup({ containers: [], volumeExists: false });
+    const { res } = await run(t);
+    expect(res.message).to.equal("IPFS was set up again. IPFS is running again.");
+    expect(t.commands.filter(c => c.includes("docker run"))).to.deep.equal([]);
+    sinon.assert.calledOnce(t.docker.compose.up);
   });
 
   it("refuses a data volume it does not recognise, the export volume included", async () => {
@@ -241,12 +285,13 @@ describe("Call function: resetIpfsData", function() {
     expectSafe(t);
   });
 
-  it("removing the container fails: deletes nothing and starts IPFS again", async () => {
-    const t = setup({ rmFails: true });
+  it("deleting the init marker fails: empties nothing and starts IPFS again", async () => {
+    const t = setup({ markerFails: true });
     const { err } = await run(t);
-    expect(err.message).to.match(/^IPFS could not be stopped\. Nothing was deleted/);
+    expect(err.message).to.equal("Deleting the IPFS storage failed. IPFS is being started again.");
     expect(t.commands.filter(c => c.includes("rm -rf"))).to.deep.equal([]);
     sinon.assert.calledOnce(t.docker.compose.up);
+    expect(t.pending()).to.equal(null);
   });
 
   it("measuring fails: still empties, size unknown", async () => {
@@ -308,12 +353,55 @@ describe("Call function: resetIpfsData", function() {
     sinon.assert.notCalled(t.ipfsNode.connectStorePeers);
   });
 
-  it("IPFS exited or missing after the start: did not start again", async () => {
-    for (const after of [ipfsContainer({ running: false, state: "exited" }), null]) {
+  it("IPFS exited, created or missing after the start: did not start again", async () => {
+    for (const after of [
+      ipfsContainer({ running: false, state: "exited" }),
+      ipfsContainer({ running: true, state: "created" }),
+      null
+    ]) {
       const t = setup({ answers: false, after });
       const { err } = await run(t);
       expect(err.message).to.match(/^IPFS storage was emptied but IPFS did not start again\./);
     }
+  });
+
+  it("IPFS crash-loops on the new repo: not reported as done, even if it answered once", async () => {
+    // dockerList calls a restarting container running (its Status is not "Exited")
+    for (const answers of [true, false]) {
+      const t = setup({ answers, after: ipfsContainer({ running: true, state: "restarting" }) });
+      const { res, err } = await run(t);
+      expect(res).to.equal(undefined);
+      expect(err.message).to.equal(
+        "IPFS storage was emptied but IPFS did not start again. Restart your AVADO or contact AVADO support."
+      );
+      sinon.assert.notCalled(t.ipfsNode.connectStorePeers);
+    }
+  });
+
+  describe("recoverInterruptedReset (DAPPMANAGER start)", () => {
+    it("does nothing when no reset was running", async () => {
+      const t = setup();
+      expect(await t.call.recoverInterruptedReset()).to.equal(false);
+      sinon.assert.notCalled(t.docker.compose.up);
+      sinon.assert.notCalled(t.shell);
+    });
+
+    it("after an interrupted reset: removes the leftover busybox and starts IPFS", async () => {
+      const t = setup({
+        pending: { at: "2026-10-13T08:00:00Z" },
+        leftoverContainers: "abc123\ndef456\n",
+        containers: [ipfsContainer({ state: "running" })]
+      });
+      expect(await t.call.recoverInterruptedReset()).to.equal(true);
+      expect(t.commands).to.deep.equal([
+        "docker ps -aq --filter name=ipfs-reset-",
+        "docker rm -f abc123 def456"
+      ]);
+      sinon.assert.calledOnce(t.docker.compose.up);
+      sinon.assert.calledWith(t.docker.compose.up, dcPath);
+      expect(t.pending()).to.equal(null);
+      expect(operations.list()).to.deep.equal([]);
+    });
   });
 
   it("is ready for another reset after a failure", async () => {
@@ -355,9 +443,9 @@ describe("Call function: resetIpfsData", function() {
   });
 
   describe("command builders", () => {
-    const { emptyCommand, sizeCommand, leftCommand } = require("calls/resetIpfsData");
+    const { emptyCommand, sizeCommand, leftCommand, markerCommand } = require("calls/resetIpfsData");
     it("only take the IPFS data volume", () => {
-      for (const build of [emptyCommand, sizeCommand, leftCommand]) {
+      for (const build of [emptyCommand, sizeCommand, leftCommand, markerCommand]) {
         expect(() => build("n", VOL)).to.not.throw();
         for (const v of [EXPORT, "teku_data", "x; rm -rf /", "", undefined, `${VOL} -v /:/host`]) {
           expect(() => build("n", v)).to.throw("unexpected volume name");
