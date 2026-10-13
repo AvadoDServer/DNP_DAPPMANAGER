@@ -301,5 +301,12 @@
     "uploadedTo": {
       "http://80.208.229.228:35001": "Sun, 11 Oct 2026 18:29:46 GMT"
     }
+  },
+  "10.0.52": {
+    "hash": "/ipfs/QmRWTwsFQim7qRPaWa3hr1zifPQq7cyzCgTUQkRzU7YikA",
+    "type": "manifest",
+    "uploadedTo": {
+      "http://80.208.229.228:35001": "Tue, 13 Oct 2026 14:08:04 GMT"
+    }
   }
 }
