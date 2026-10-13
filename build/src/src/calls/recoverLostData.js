@@ -5,6 +5,7 @@ const params = require("params");
 const docker = require("modules/docker");
 const dockerList = require("modules/dockerList");
 const lostData = require("modules/lostData");
+const operations = require("modules/operations");
 const shell = require("utils/shell");
 const logUi = require("utils/logUi");
 const { shortNameCapitalized } = require("utils/strings");
@@ -140,9 +141,6 @@ const failed = line =>
     `Recovering the data failed: ${line.replace(/\.$/, "")}. Nothing was deleted; contact AVADO support.`
   );
 
-// Packages with a recovery running in this process
-const running = new Set();
-
 /**
  * Copies a package's data from an unused volume found by findLostData into
  * the package's live volume. Nothing is ever deleted: files that already
@@ -157,15 +155,12 @@ const recoverLostData = async ({ id, volume } = {}) => {
   if (!volume || typeof volume !== "string") {
     throw Error("kwarg volume must be defined");
   }
-  if (running.has(id)) {
+  // Recoveries running in this process (modules/operations): one per
+  // package, and resetIpfsData does not start meanwhile
+  if (operations.isRunning("recoverLostData", id)) {
     throw Error("A recovery for this app is already running.");
   }
-  running.add(id);
-  try {
-    return await recover({ id, volume });
-  } finally {
-    running.delete(id);
-  }
+  return operations.track("recoverLostData", id, () => recover({ id, volume }));
 };
 
 async function recover({ id, volume }) {

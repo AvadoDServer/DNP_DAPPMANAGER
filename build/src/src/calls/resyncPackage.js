@@ -7,6 +7,7 @@ const shellExec = require("utils/shell");
 const { eventBus, eventBusTag } = require("eventBus");
 const { stringIncludes } = require("utils/strings");
 const logs = require("logs.js")(module);
+const operations = require("modules/operations");
 
 /**
  * Subdirectory names/patterns to PRESERVE inside a volume (case-insensitive).
@@ -72,6 +73,8 @@ function matchesPatterns(dirName, patterns) {
  */
 async function resyncPackage({ id }) {
   if (!id) throw Error("kwarg id must be defined");
+  // IPFS must not be started or removed while its storage is emptied
+  operations.assertNotIpfsReset(id);
 
   const dnpList = await dockerList.listContainers();
   const dnp = dnpList.find((_dnp) => stringIncludes(_dnp.name, id));

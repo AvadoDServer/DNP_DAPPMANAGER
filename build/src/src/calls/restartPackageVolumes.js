@@ -5,6 +5,7 @@ const docker = require("modules/docker");
 const dockerList = require("modules/dockerList");
 const { eventBus, eventBusTag } = require("eventBus");
 const { stringIncludes } = require("utils/strings");
+const operations = require("modules/operations");
 
 /**
  * Removes a package volumes. The re-ups the package
@@ -13,6 +14,8 @@ const { stringIncludes } = require("utils/strings");
  */
 async function restartPackageVolumes({ id }) {
   if (!id) throw Error("kwarg id must be defined");
+  // IPFS must not be started or removed while its storage is emptied
+  operations.assertNotIpfsReset(id);
 
   const dnpList = await dockerList.listContainers();
   const dnp = dnpList.find(_dnp => stringIncludes(_dnp.name, id));

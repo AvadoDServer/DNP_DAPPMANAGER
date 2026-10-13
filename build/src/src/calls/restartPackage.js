@@ -4,6 +4,7 @@ const restartPatch = require("modules/restartPatch");
 const params = require("params");
 const docker = require("modules/docker");
 const { eventBus, eventBusTag } = require("eventBus");
+const operations = require("modules/operations");
 
 /**
  * Calls docker rm and docker up on a package
@@ -12,6 +13,8 @@ const { eventBus, eventBusTag } = require("eventBus");
  */
 const restartPackage = async ({ id, timeout = 180 }) => {
   if (!id) throw Error("kwarg id must be defined");
+  // IPFS must not be started or removed while its storage is emptied
+  operations.assertNotIpfsReset(id);
 
   const dockerComposePath = getPath.dockerComposeSmart(id, params);
   if (!fs.existsSync(dockerComposePath)) {

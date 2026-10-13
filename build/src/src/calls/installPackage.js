@@ -9,6 +9,7 @@ const dappGet = require("modules/dappGet");
 const dockerList = require("modules/dockerList");
 const getManifest = require("modules/getManifest");
 const lockPorts = require("modules/lockPorts");
+const operations = require("modules/operations");
 // Utils
 const logUi = require("utils/logUi");
 const parse = require("utils/parse");
@@ -59,15 +60,28 @@ const updateDNS = require("./updateDNS");
  *   (utils/isStoppedPackage), dependencies included, and leaves the installed
  *   version's files in place. Set by the auto-updater.
  * options = { BYPASS_RESOLVER: true, BYPASS_CORE_RESTRICTION: true }
+ *
+ * Refused while resetIpfsData runs: IPFS is down then. Every install is
+ * registered in modules/operations while it runs, so resetIpfsData refuses
+ * to start in turn.
  */
-const installPackage = async ({
+const installPackage = async (kwargs = {}) => {
+  if (!kwargs.id) throw Error("kwarg id must be defined");
+  if (operations.isRunning("resetIpfsData")) {
+    throw Error(
+      "The IPFS storage is being reset, so nothing can be installed or updated right now. Try again in a few minutes."
+    );
+  }
+  return operations.track("installPackage", kwargs.id, () => install(kwargs));
+};
+
+const install = async ({
   id,
   userSetEnvs = {},
   userSetVols = {},
   userSetPorts = {},
   options = {}
 }) => {
-  if (!id) throw Error("kwarg id must be defined");
 
   /**
    * The logId is the requested id.

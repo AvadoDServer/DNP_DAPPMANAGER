@@ -208,3 +208,159 @@ when the package could receive an anonymous volume.
   limit. Such an entry fails (`FAILED`), everything else is copied.
 - Temporary files of an interrupted run stay in the live volume.
 - Folders created by the recovery do not keep their modification time.
+
+## IPFS storage reset
+
+After a few sudden power losses the IPFS repo can be damaged: the IPFS core
+container then restarts over and over, and with IPFS down nothing can be
+installed or updated. These calls let the Admin show that and fix it with one
+click. The container helpers live in `modules/ipfsNode.js`.
+
+### `getIpfsHealth()`
+
+Read-only and cheap, for the Admin's "IPFS keeps restarting" check (the Admin
+polls it every 2 minutes while its tab is open; DAPPMANAGER 10.0.52 and newer). One
+`docker inspect DAppNodeCore-ipfs.dnp.dappnode.eth`, plus
+`docker logs --tail 10` only when IPFS is restarting, not running, or
+restarted in the last hour. It is a call of its own rather than a part of
+`listLostData` (a volume scan every 10 minutes that can take minutes) or
+`getStats` (every few seconds).
+
+```
+{
+  message,
+  result: {
+    exists,            // false when there is no IPFS container (all else empty)
+    running,           // running and not restarting
+    restarting,        // Docker State.Restarting
+    restartCount,      // Docker RestartCount since the container was created
+    restartsLastHour,  // from earlier calls of this DAPPMANAGER process: 0
+                       // until a second call; a new container counts from 0
+    startedAt,         // Docker State.StartedAt or null
+    lastLogLines,      // <= 10 lines, colours removed, each <= 300 characters
+    missingSince,      // ISO date this process first found no container,
+                       // null while there is one (an update or restart of
+                       // IPFS removes it for a few seconds; the Admin waits
+                       // 60 s before it reports IPFS missing)
+    resetRunning       // resetIpfsData is running now
+  }
+}
+```
+
+### `resetIpfsData()`
+
+No arguments. Empties the IPFS data volume and starts IPFS on a new repo.
+
+1. Refuses (nothing is changed) while another long operation runs in this
+   process (`modules/operations.js`): an install or update (also core updates
+   and the auto-updater), a beacon reset (`resetBeaconData`), a lost-data
+   recovery (`recoverLostData`), or another IPFS reset (`Resetting the IPFS
+   storage is already running.`). An install stops counting after **2 hours**
+   (`operations.MAX_AGE`): an IPFS download that stalls after its first chunk
+   never times out, and the longest legitimate install (a multi-GB image over
+   a slow line, then loaded into Docker on a busy disk) stays well under that.
+   Refuses when `DNCORE/docker-compose-ipfs.yml` is missing, or when the IPFS
+   container's `/data/ipfs` mount is not one named volume matching
+   `/^[a-z0-9]+_ipfsdnpdappnodeeth_data$/`.
+2. While it runs, these refuse for `ipfs.dnp.dappnode.eth` (`The IPFS storage
+   is being reset. Try again when it is done. Nothing was changed.`):
+   `installPackage` (for every package), `restartPackage`, `togglePackage`,
+   `removePackage`, `restartPackageVolumes` and `resyncPackage`.
+3. `docker-compose -p dncore -f DNCORE/docker-compose-ipfs.yml stop --timeout
+   300`. The container is **stopped, never removed**: a stopped
+   `restart: always` container is started again when Docker starts, so a power
+   cut or a Reboot in the middle never leaves the box without IPFS.
+   `compose down` is never used (it can remove networks).
+4. In named busybox containers (removed by name when the shell fails or times
+   out), in this order:
+   - `rm -f /v/migrate3`: the IPFS package's `start_ipfs` wipes the repo and
+     runs `ipfs init` whenever this marker is missing, so from here on any
+     interrupted reset still ends in a clean new repo on the next start;
+   - `du -sk` (read-only, 5 minutes, best effort: `removedKb: null`);
+   - `rm -f /v/migrate3; rm -rf /v/* /v/.[!.]* /v/..?*` (1 hour);
+   - `ls -A` (read-only, 5 minutes), which must print nothing.
+   The volume itself stays (`docker volume rm` is never used), so it keeps its
+   name and compose project.
+5. `docker-compose … up -d`, always, also after a failure in 3 or 4: it starts
+   the stopped container (or creates a missing one). Waits up to 2 minutes for
+   the IPFS API (`POST http://my.ipfs.dnp.dappnode.eth:5001/api/v0/id`). IPFS
+   counts as started only when its container is then in state `running`
+   (`restarting` or `created` are a failed start, also when the API answered
+   once). Then it connects to the AVADO store nodes
+   (`params.IPFS_STORE_PEERS`, best effort) and counts the peers.
+
+**IPFS container missing** (with the compose file in place): the call does not
+refuse. It empties the volume compose uses for it
+(`<project>_ipfsdnpdappnodeeth_data`, `dncore_…` on a box) when that exists,
+and runs `up -d`, which creates the container.
+
+**Interrupted by a DAPPMANAGER restart** (its own update, a crash): the db key
+`ipfsResetRunning` is set for the whole call. A stopped container is not
+started by its restart policy until Docker itself restarts, so on start the
+DAPPMANAGER (`recoverInterruptedReset`, called from `index.js`) removes any
+`ipfs-reset-*` busybox still running and runs `up -d`. The marker was deleted
+first, so IPFS sets up a new repo by itself.
+
+The IPFS package (AVADO-DNP-ipfs `build/start_ipfs`) runs `ipfs init` when the
+repo has no `migrate3` file (lines 19–27) and applies its config (API and
+gateway addresses, routing, connection manager, `StorageMax`, profile) on
+every start, so nothing else has to be set again. The new repo has a new peer
+id, no pins and the default bootstrap peers. The DAPPMANAGER keeps no "hash not
+available" state: every download asks IPFS again (and pins what it downloaded).
+
+**Deleted:** only the contents of the IPFS data volume
+(`dncore_ipfsdnpdappnodeeth_data`): the package files IPFS keeps as a cache,
+its pins and its peer identity. **Kept:** the volume itself, the export volume
+(`dncore_ipfsdnpdappnodeeth_export`), everything in `DNCORE`, every package
+and its data. Packages that are installed keep working; IPFS downloads
+package files again when they are needed.
+
+```
+{
+  message: "Deleted 1.3 GB of IPFS storage. IPFS is running again.",
+  logMessage: true,
+  userAction: true,
+  result: {
+    removedKb,           // du -sk before emptying, null when unknown
+    restarted,           // the API answered within 2 minutes; false when the
+                         // container runs but is still starting
+    peersConnected,      // IPFS peers at the end, null when unknown
+    storePeersConnected  // AVADO store nodes connected
+  }
+}
+```
+
+Errors before anything is changed (plain words, the docker output only in the
+log):
+- `Could not check the IPFS storage. Nothing was changed.` (container missing
+  and `docker volume inspect` failed for another reason than "no such volume")
+- `Could not prepare the reset. Nothing was changed.` (the db key
+  `ipfsResetRunning` could not be written: without it an interrupted reset
+  could not be finished at the next start)
+
+Errors (IPFS is started again in every case after step 3):
+- `IPFS could not be stopped. Nothing was deleted; IPFS is being started again.`
+- `Deleting the IPFS storage failed. IPFS is being started again.`
+- `Could not check the IPFS storage after deleting it. IPFS is being started again.`
+- `Some of the IPFS storage could not be deleted. IPFS is being started again.`
+- `IPFS storage was emptied but IPFS did not start again. Restart your AVADO or
+  contact AVADO support.` (the start failed, or the container is not in state
+  `running` after 2 minutes)
+- an error of step 3 or 4 and a failed start: the first message without
+  "IPFS is being started again", then `IPFS did not start again. Restart your
+  AVADO or contact AVADO support.`
+
+Safe to call again after any failure.
+
+### Known limits
+
+- The lock is in memory: a DAPPMANAGER restart forgets it (the operations it
+  guards end with that restart; an interrupted IPFS reset is finished by
+  `recoverInterruptedReset`).
+- `restartsLastHour` starts at 0 after a DAPPMANAGER restart; `restarting`
+  still shows a crash loop right away.
+- The store node's peer id is fixed in `params.js`; if that node gets a new
+  repo the connect fails (logged) and IPFS finds the store through the DHT,
+  which can take hours for a new build.
+- `rebootHost` is not refused during a reset; a reboot mid-reset is safe (the
+  stopped container comes back with Docker and re-inits its repo).

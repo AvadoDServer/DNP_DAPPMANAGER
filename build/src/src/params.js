@@ -22,6 +22,11 @@ module.exports = {
   // IPFS parameters
   IPFS: process.env.IPFS_REDIRECT || "my.ipfs.dnp.dappnode.eth",
   IPFS_TIMEOUT: 30 * 1000,
+  // AVADO IPFS nodes that hold every store build (releases.json uploadedTo).
+  // resetIpfsData connects to them after it started IPFS on an empty repo.
+  IPFS_STORE_PEERS: [
+    "/ip4/80.208.229.228/tcp/4001/p2p/12D3KooWBRvd3UZ8rBBHRhAw7uYJSwmpB2b14dx95xtopz7PFhgY"
+  ],
 
   // Web3 parameters
   WEB3HOSTWS: "ws://my.ethchain.dnp.dappnode.eth:8546",
