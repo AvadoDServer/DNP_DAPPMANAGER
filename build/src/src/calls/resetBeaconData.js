@@ -3,6 +3,7 @@ const getPath = require("utils/getPath");
 const params = require("params");
 const docker = require("modules/docker");
 const dockerList = require("modules/dockerList");
+const operations = require("modules/operations");
 const shell = require("utils/shell");
 const logUi = require("utils/logUi");
 const logs = require("logs.js")(module);
@@ -69,7 +70,11 @@ function formatSize(bytes) {
  *
  * @param {string} id DNP .eth name, must be a key of BEACON_DATA
  */
-const resetBeaconData = async ({ id }) => {
+const resetBeaconData = async ({ id } = {}) =>
+  // Registered while it runs: resetIpfsData does not start meanwhile
+  operations.track("resetBeaconData", id || null, () => reset({ id }));
+
+const reset = async ({ id }) => {
   const entry = BEACON_DATA[id];
   if (!id || !Object.prototype.hasOwnProperty.call(BEACON_DATA, id)) {
     throw Error(
