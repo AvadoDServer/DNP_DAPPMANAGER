@@ -14,6 +14,7 @@ module.exports = {
   fetchDirectory: require("./fetchDirectory"),
   fetchPackageVersions: require("./fetchPackageVersions"),
   fetchPackageData: require("./fetchPackageData"),
+  getDiagnostics: require("./getDiagnostics"),
   getIpfsHealth: require("./getIpfsHealth"),
   getStats: require("./getStats"),
   getUserActionLogs: require("./getUserActionLogs"),
