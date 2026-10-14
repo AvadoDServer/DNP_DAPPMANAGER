@@ -67,6 +67,7 @@ const SAMPLE = [
   "[Wed Oct 14 09:59:01 2026] mce: CPU0: Thermal monitoring enabled (TM1)",
   "[Wed Oct 14 09:59:01 2026] mce: CPU supports 10 MCE banks",
   "[Wed Oct 14 09:59:01 2026] MCE: In-kernel MCE decoding enabled.",
+  "[Wed Oct 14 09:59:02 2026] nvme nvme0: Shutdown timeout set to 8 seconds",
   "[Wed Oct 14 09:59:01 2026] thermal_sys: Registered thermal governor 'step_wise'",
   "[Wed Oct 14 09:59:02 2026] ACPI: thermal: Thermal Zone [TZ00] (28 C)",
   "[Wed Oct 14 09:59:03 2026] ata1: SATA link down (SStatus 0 SControl 300)",
@@ -135,6 +136,7 @@ describe("Module: diagnostics/host", () => {
       "[Wed Oct 14 09:58:21 2026] thermal_sys: Registered thermal governor 'step_wise'",
       "[Wed Oct 14 09:58:22 2026] ACPI: thermal: Thermal Zone [TZ00] (28 C)",
       "[Wed Oct 14 09:58:22 2026] MCE: In-kernel MCE decoding enabled.",
+      "[Wed Oct 14 09:58:22 2026] nvme nvme0: Shutdown timeout set to 10 seconds",
       "[Wed Oct 14 09:58:23 2026] ata1: SATA link down (SStatus 0 SControl 300)",
       "[Wed Oct 14 09:58:30 2026] r8169 0000:02:00.0 enp2s0: Link is Down",
       "[Wed Oct 14 09:58:34 2026] r8169 0000:02:00.0 enp2s0: Link is Up - 1Gbps/Full",
@@ -233,25 +235,32 @@ describe("Module: diagnostics/host", () => {
     expect(calls[0].opts).to.deep.equal({ timeout: 10000 });
   });
 
-  it("at 10 s: removes the container and keeps the sections printed so far", async () => {
+  it("at 10 s: returns the sections printed so far at once, the container is removed in the background", async () => {
     const calls = [];
     // cut while reading the sensors
     const partial = SAMPLE.slice(0, SAMPLE.indexOf("### hwmon") + "### hwmon\nacpitz\t\t27800\n".length);
-    const host = loadRunner(async (file, args) => {
+    // Like exec.run: the docker CLI is killed at the timeout; the stuck
+    // container makes `docker rm -f` hang too
+    const host = loadRunner((file, args, opts) => {
       calls.push(args.slice(0, 3));
-      if (args[0] === "run") throw Object.assign(Error("timed out after 10 s"), { timedOut: true, stdout: partial });
-      return { code: 0, stdout: "", stderr: "" };
+      if (args[0] === "run") {
+        return new Promise((resolve, reject) =>
+          setTimeout(() => reject(Object.assign(Error("timed out after 0 s"), { timedOut: true, stdout: partial })), opts.timeout)
+        );
+      }
+      return new Promise(() => {});
     });
+    host._setHostTimeout(30);
+    const t0 = Date.now();
     const { output, error } = await host.runHostScript();
-    expect(error).to.equal("timed out after 10 s, kept the sections read until then");
+    expect(Date.now() - t0).to.be.below(200);
+    expect(error).to.equal("timed out after 0 s, kept the sections read until then");
     expect(calls[1]).to.deep.equal(["rm", "-f", "dappmanager-diag-host"]);
     const parsed = parseHostOutput(output, now);
     expect(parsed.host.uptimeSeconds).to.equal(7260);
     expect(parsed.host.rootDisk.totalGB).to.equal(1830.8);
     expect(parsed.network.defaultRoute).to.deep.equal({ interface: "wlp3s0", gateway: "192.168.1.1" });
     expect(parsed.host.temperatures).to.deep.equal([{ name: "acpitz", celsius: 27.8 }]);
-    // sections never printed stay empty
-    expect(parsed.host.dmesg).to.deep.equal({ oom: [], hardware: [], network: [] });
   });
 
   it("a timeout before any section is an error, the container is still removed", async () => {

@@ -16,7 +16,7 @@ const { scrub } = require("./scrub");
  * and the container (named, so it can be found) is removed.
  */
 
-const HOST_TIMEOUT = 10 * 1000;
+let HOST_TIMEOUT = 10 * 1000;
 const HOST_CONTAINER = "dappmanager-diag-host";
 
 const HOST_SCRIPT = [
@@ -73,8 +73,10 @@ async function runOnce() {
     res = await run("docker", hostCommandArgs(), { timeout: HOST_TIMEOUT });
   } catch (e) {
     if (!e.timedOut) throw e;
-    // Killing the docker CLI does not stop the container
-    await removeHostContainer();
+    // Killing the docker CLI does not stop the container. Not awaited: a read
+    // stuck in the kernel (a hung NVMe) can keep `docker rm -f` waiting too,
+    // and the sections already read must come back now.
+    removeHostContainer();
     if (!/^### /m.test(e.stdout || "")) throw e;
     return { output: e.stdout, error: `${e.message}, kept the sections read until then` };
   }
@@ -184,7 +186,7 @@ const DMESG = {
   oom: /Out of memory|oom-kill|Killed process/,
   hardware: /I\/O error|nvme.*(timeout|reset controller|failed|abort)|ata\d.*(error|failed command)|EXT4-fs error|Machine Check|Hardware Error|critical temperature|thermal.*(critical|shutdown)/i,
   // Boot messages that name the same words but report no fault
-  hardwareNot: /Thermal monitoring|thermal_sys|mce: CPU supports/i,
+  hardwareNot: /Thermal monitoring|thermal_sys|mce: CPU supports|Shutdown timeout set to/i,
   // "wlan" plus the predictable names Debian gives Wi-Fi (wlp3s0, wlx…)
   network: /link (is )?(down|up)|carrier|NETDEV WATCHDOG|\bwl\w*.*(disconnect|deauth)/i,
   // An empty SATA port, and Docker's own interfaces that go up and down with
@@ -357,6 +359,8 @@ module.exports = {
   HOST_TIMEOUT,
   HOST_CONTAINER,
   isPrivateIpv4,
+  // Tests only
+  _setHostTimeout: ms => (HOST_TIMEOUT = ms),
   hostCommandArgs,
   runHostScript,
   parseHostOutput

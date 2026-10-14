@@ -212,6 +212,38 @@ describe("Call: getDiagnostics", () => {
     expect(result.network.interfaces).to.have.length(1);
   });
 
+  it("a host run that never ends returns its partial sections within the cap", async () => {
+    const pq = require("proxyquire");
+    const partial = "### uptime\n7260.51 1.00\n### loadavg\n0.5 0.4 0.3 1/2 3\n### hwmon\n";
+    const exec = {
+      run: (file, args, opts) =>
+        args[0] === "run"
+          ? new Promise((resolve, reject) =>
+              setTimeout(() => reject(Object.assign(Error("timed out after 0 s"), { timedOut: true, stdout: partial })), opts.timeout)
+            )
+          : new Promise(() => {}) // docker rm -f stuck behind the hung read
+    };
+    const realH = pq("modules/diagnostics/host", { "./exec": exec });
+    realH._setHostTimeout(30);
+    const getDiagnostics = proxyquire("calls/getDiagnostics", {
+      "modules/diagnostics/host": realH,
+      "modules/diagnostics/containers": { readContainers: async () => [] },
+      "modules/diagnostics/network": {},
+      "modules/diagnostics/clients": {}
+    });
+    getDiagnostics._setCapMs(500);
+    try {
+      const t0 = Date.now();
+      const { result } = await getDiagnostics({ host: true, network: false, logs: false, clients: false });
+      expect(Date.now() - t0).to.be.below(400);
+      expect(result.errors).to.deep.equal(["host: timed out after 0 s, kept the sections read until then"]);
+      expect(result.host.uptimeSeconds).to.equal(7260);
+      expect(result.host.loadavg).to.deep.equal([0.5, 0.4, 0.3]);
+    } finally {
+      getDiagnostics._setCapMs(24000);
+    }
+  });
+
   it("a failing containers probe leaves containers and clients empty", async () => {
     const { getDiagnostics } = setup({
       readContainers: async () => {
