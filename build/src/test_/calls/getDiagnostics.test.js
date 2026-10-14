@@ -16,7 +16,7 @@ describe("Call: getDiagnostics", () => {
     };
     const host = {
       HOST_TIMEOUT: 10000,
-      runHostScript: record("host", over.runHostScript || (async () => "HOST OUTPUT")),
+      runHostScript: record("host", over.runHostScript || (async () => ({ output: "HOST OUTPUT", error: null }))),
       parseHostOutput: () => ({
         host: { uptimeSeconds: 600, bootedAt: "2026-10-14T09:50:00.000Z" },
         network: {
@@ -198,6 +198,16 @@ describe("Call: getDiagnostics", () => {
     expect(result.network.dns).to.equal(null);
     expect(result.network.internet["https://bo.ava.do/"].ok).to.equal(true);
     expect(result.containers).to.have.length(2);
+  });
+
+  it("a host run cut short keeps what it read and says so", async () => {
+    const { getDiagnostics } = setup({
+      runHostScript: async () => ({ output: "PARTIAL", error: "timed out after 10 s, kept the sections read until then" })
+    });
+    const { result } = await getDiagnostics({});
+    expect(result.errors).to.deep.equal(["host: timed out after 10 s, kept the sections read until then"]);
+    expect(result.host).to.not.equal(null);
+    expect(result.network.interfaces).to.have.length(1);
   });
 
   it("a failing containers probe leaves containers and clients empty", async () => {

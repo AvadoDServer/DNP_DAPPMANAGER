@@ -13,6 +13,7 @@ const { spawn } = require("child_process");
  * @param {object} options { timeout (ms), maxBytes }
  * @returns {Promise<{ code: number, stdout: string, stderr: string, combined: string }>}
  *   rejects only when the program cannot start or runs past the timeout
+ *   (that error has `timedOut` and the `stdout` received until then)
  */
 function run(file, args, { timeout = 10 * 1000, maxBytes = 4 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -39,7 +40,11 @@ function run(file, args, { timeout = 10 * 1000, maxBytes = 4 * 1024 * 1024 } = {
       if (done) return;
       done = true;
       child.kill("SIGKILL");
-      reject(Error(`timed out after ${Math.round(timeout / 1000)} s`));
+      const e = Error(`timed out after ${Math.round(timeout / 1000)} s`);
+      // What arrived before the timeout, for callers that can use part of it
+      e.timedOut = true;
+      e.stdout = Buffer.concat(out).toString("utf8");
+      reject(e);
     }, timeout);
     child.on("error", e => {
       if (done) return;

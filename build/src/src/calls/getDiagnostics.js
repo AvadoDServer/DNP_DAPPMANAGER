@@ -91,7 +91,12 @@ async function getDiagnostics(kwargs) {
   // The box and its interfaces: one busybox run
   if (opts.host || opts.network) {
     tasks.push(
-      probe("host", host.HOST_TIMEOUT + 1000, async () => host.parseHostOutput(await host.runHostScript())).then(
+      probe("host", host.HOST_TIMEOUT + 3000, async () => {
+        const { output, error } = await host.runHostScript();
+        // Cut short: what was read is kept, the rest stays null
+        if (error) addError(`host: ${error}`);
+        return host.parseHostOutput(output);
+      }).then(
         parsed => {
           if (closed) return;
           if (opts.host && parsed) result.host = parsed.host;
