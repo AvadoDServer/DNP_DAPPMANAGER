@@ -36,6 +36,9 @@ describe("Module: diagnostics/clients", () => {
     expect(getClient("prysm-beacon-chain-mainnet.avado.dnp.dappnode.eth")).to.include({ port: 3500, keymanager: false });
     expect(getClient("eth2validator.avado.dnp.dappnode.eth")).to.include({ role: "validator", settingsPath: "/root/settings.json" });
     expect(getClient("avado-dnp-nethermind.public.dappnode.eth")).to.include({ role: "execution", port: 8545 });
+    expect(getClient("ethchain-geth.public.dappnode.eth")).to.include({ role: "execution", client: "geth", network: "mainnet", port: 8545, settingsPath: null });
+    expect(getClient("holesky-geth.avado.dnp.dappnode.eth")).to.include({ client: "geth", network: "holesky" });
+    expect(getClient("goerli-geth.avado.dnp.dappnode.eth")).to.include({ client: "geth", network: "goerli" });
     expect(getClient("ipfs.dnp.dappnode.eth")).to.equal(null);
   });
 

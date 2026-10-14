@@ -7,10 +7,10 @@ const { errorMessage } = require("./timeout");
  * monitor (port 9999) proxies the validator keymanager API (/keymanager/*).
  *
  * Read from the package repos in ~/Documents/GitHub on 2026-10-14
- * (AVADO-DNP-<repo> at the commit named). The same files hold for every
- * network variant of a package unless an entry says otherwise. Execution
- * clients without a repo there (Geth, Reth, Erigon, Besu) are not listed:
- * their ports are not guessed.
+ * (AVADO-DNP-<repo> or dappnode-geth at the commit named). The same files
+ * hold for every network variant of a package unless an entry says
+ * otherwise. Reth, Erigon and Besu have no AVADO package repo there, so they
+ * are not listed: their ports are not guessed.
  *
  * role "beacon" for Teku, Nimbus and Lighthouse means beacon node AND
  * validator client in one container: they also get a validator count.
@@ -81,11 +81,27 @@ const NETHERMIND = {
   keymanager: false
 };
 
+const GETH = {
+  role: "execution",
+  client: "geth",
+  // dappnode-geth@d2235aa build/files/start.sh: --http --http.addr="0.0.0.0"
+  // on Geth's default port 8545, the port build/files/nginx.conf proxies to
+  // (proxy_pass http://localhost:8545) and docker-compose-*.yml publish
+  port: 8545,
+  // No settings.json: configured by environment variables
+  settingsPath: null,
+  keymanager: false
+};
+
 const entry = (name, base, network) => Object.assign({ name, network }, base);
 
 // Package names from each repo's dappnode_package-<network>.json. Prater is
 // the retired Goerli testnet (called "goerli" like the Admin's table).
 const CLIENTS = [
+  // dappnode-geth build/dappnode_package-{mainnet,holesky,goerli}.json
+  entry("ethchain-geth.public.dappnode.eth", GETH, "mainnet"),
+  entry("holesky-geth.avado.dnp.dappnode.eth", GETH, "holesky"),
+  entry("goerli-geth.avado.dnp.dappnode.eth", GETH, "goerli"),
   entry("avado-dnp-nethermind.public.dappnode.eth", NETHERMIND, "mainnet"),
   entry("nethermind-gnosis.avado.dnp.dappnode.eth", NETHERMIND, "gnosis"),
   entry("nethermind-goerli.avado.dnp.dappnode.eth", NETHERMIND, "goerli"),
