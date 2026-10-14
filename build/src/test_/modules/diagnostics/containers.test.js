@@ -100,13 +100,16 @@ describe("Module: diagnostics/containers", () => {
       return answer;
     };
     const m = load(run);
+    m._resetSupervisordCache();
     const p = await m.readProcesses("DAppNodePackage-teku.avado.dnp.dappnode.eth");
     expect(p[3]).to.deep.equal({ name: "teku", state: "FATAL", description: "Exited too quickly (process log may have details)" });
     expect(calls[0].args.slice(0, 4)).to.deep.equal(["exec", "DAppNodePackage-teku.avado.dnp.dappnode.eth", "sh", "-c"]);
-    expect(calls[0].args[4]).to.include("[ -f /etc/supervisord.conf ] || exit 0; supervisorctl -c /etc/supervisord.conf status");
+    expect(calls[0].args[4]).to.equal(
+      "[ -f /etc/supervisord.conf ] || { echo __no_supervisord__; exit 0; }; supervisorctl -c /etc/supervisord.conf status; exit 0"
+    );
     expect(calls[0].opts).to.deep.equal({ timeout: 5000 });
 
-    answer = { code: 0, stdout: "", stderr: "" };
+    answer = { code: 0, stdout: "__no_supervisord__\n", stderr: "" };
     expect(await m.readProcesses("x")).to.deep.equal([]);
     answer = { code: 126, stdout: "", stderr: 'OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH: unknown' };
     expect(await m.readProcesses("x")).to.deep.equal([]);
@@ -114,6 +117,45 @@ describe("Module: diagnostics/containers", () => {
     let err;
     await m.readProcesses("x").catch(e => (err = e));
     expect(err.message).to.equal("unix:///dev/shm/supervisor.sock no such file");
+  });
+
+  it("remembers per container id + image whether it has supervisord: one exec per poll, none without it", async () => {
+    const calls = [];
+    const answers = {
+      teku: { code: 0, stdout: f.tekuSupervisor, stderr: "" },
+      busy: { code: 0, stdout: "__no_supervisord__", stderr: "" },
+      // supervisorctl exits 3 when a process is not running
+      tekuDirect: { code: 3, stdout: f.tekuSupervisor, stderr: "" }
+    };
+    const run = async (file, args) => {
+      calls.push(args);
+      if (args[1] === "busy") return answers.busy;
+      return args[2] === "supervisorctl" ? answers.tekuDirect : answers.teku;
+    };
+    const m = load(run);
+    m._resetSupervisordCache();
+    for (let poll = 0; poll < 3; poll++) {
+      expect(await m.readProcesses("teku", { cacheKey: "c1|sha256:img1" })).to.have.length(4);
+      expect(await m.readProcesses("busy", { cacheKey: "c2|sha256:img2" })).to.deep.equal([]);
+    }
+    expect(calls).to.have.length(4);
+    expect(calls[0].slice(2, 4)).to.deep.equal(["sh", "-c"]);
+    expect(calls[1].slice(1, 3)).to.deep.equal(["busy", "sh"]);
+    // known to have supervisord: straight to supervisorctl, no `test -f`
+    expect(calls[2]).to.deep.equal(["exec", "teku", "supervisorctl", "-c", "/etc/supervisord.conf", "status"]);
+    expect(calls[3]).to.deep.equal(["exec", "teku", "supervisorctl", "-c", "/etc/supervisord.conf", "status"]);
+
+    // a new image for the same container is looked at again
+    await m.readProcesses("busy", { cacheKey: "c2|sha256:img3" });
+    expect(calls).to.have.length(5);
+    expect(calls[4].slice(2, 4)).to.deep.equal(["sh", "-c"]);
+  });
+
+  it("the cache key is the container id + image id, not returned", () => {
+    const { formatContainer } = require("modules/diagnostics/containers");
+    const c = formatContainer(f.tekuInspect, "Up", now);
+    expect(c.cacheKey).to.equal(`${f.tekuInspect.Id}|${f.tekuInspect.Image}`);
+    expect(JSON.stringify(c)).to.not.include("cacheKey");
   });
 
   it("summarizes logs: time order, last 40 lines, last 5 errors, the error count, scrubbed", () => {

@@ -128,7 +128,7 @@ async function getDiagnostics(kwargs) {
         for (const c of running) {
           jobs.push(named(`processes ${c.id}`, name =>
             probe(name, PROCESSES_TIMEOUT + 500, () =>
-              containers.readProcesses(c.name, { timeout: PROCESSES_TIMEOUT })
+              containers.readProcesses(c.name, { timeout: PROCESSES_TIMEOUT, cacheKey: c.cacheKey })
             ).then(p => !closed && (c.processes = p || []))
           ));
         }

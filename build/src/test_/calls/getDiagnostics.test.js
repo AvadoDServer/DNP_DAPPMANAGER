@@ -114,6 +114,65 @@ describe("Call: getDiagnostics", () => {
     expect([...new Set(calls)].sort()).to.deep.equal(["containers", "processes"]);
   });
 
+  it("the light poll, against the real modules: no docker run, no docker logs, exec only into running containers with supervisord", async () => {
+    const pq = require("proxyquire");
+    const dockerCalls = [];
+    const busyboxInspect = Object.assign({}, f.tekuInspect, {
+      Id: "busy1",
+      Image: "sha256:busy",
+      Name: "/DAppNodeCore-vpn.dnp.dappnode.eth",
+      Config: { Image: "vpn.dnp.dappnode.eth:0.2.8" }
+    });
+    const ps = [
+      "DAppNodePackage-teku.avado.dnp.dappnode.eth\tUp 2 hours",
+      "DAppNodePackage-avado-dnp-nethermind.public.dappnode.eth\tExited (137) 5 minutes ago",
+      "DAppNodeCore-vpn.dnp.dappnode.eth\tUp 3 days"
+    ].join("\n");
+    const run = async (file, args) => {
+      dockerCalls.push([file, ...args]);
+      if (args[0] === "ps") return { code: 0, stdout: ps, stderr: "" };
+      if (args[0] === "inspect")
+        return { code: 0, stdout: JSON.stringify([f.tekuInspect, f.nethermindInspect, busyboxInspect]), stderr: "" };
+      if (args[0] === "exec" && args[1] === "DAppNodeCore-vpn.dnp.dappnode.eth")
+        return { code: 0, stdout: "__no_supervisord__", stderr: "" };
+      if (args[0] === "exec") return { code: args[2] === "supervisorctl" ? 3 : 0, stdout: f.tekuSupervisor, stderr: "" };
+      throw Error(`unexpected docker ${args.join(" ")}`);
+    };
+    const exec = { run, runOk: async (...a) => (await run(...a)).stdout };
+    const realC = pq("modules/diagnostics/containers", { "./exec": exec });
+    realC._resetSupervisordCache();
+    const realH = pq("modules/diagnostics/host", { "./exec": exec });
+    const forbidden = () => {
+      throw Error("not in the light poll");
+    };
+    const getDiagnostics = proxyquire("calls/getDiagnostics", {
+      "modules/diagnostics/host": realH,
+      "modules/diagnostics/containers": realC,
+      "modules/diagnostics/network": { checkDns: forbidden, checkInternet: forbidden, readIpfsStore: forbidden, checkCatalogue: forbidden },
+      "modules/diagnostics/clients": { getClient: forbidden, probeClient: forbidden }
+    });
+    const light = { host: false, network: false, logs: false, clients: false };
+    for (let poll = 0; poll < 3; poll++) {
+      const { result } = await getDiagnostics(light);
+      expect(result.errors).to.deep.equal([]);
+      expect(result.containers.find(c => c.id === "teku.avado.dnp.dappnode.eth").processes).to.have.length(4);
+    }
+    const docker = dockerCalls.map(c => c.slice(1));
+    expect(docker.filter(a => a[0] === "run")).to.deep.equal([]);
+    expect(docker.filter(a => a[0] === "logs")).to.deep.equal([]);
+    const execs = docker.filter(a => a[0] === "exec");
+    // never into the exited Nethermind
+    expect(execs.filter(a => a[1].includes("nethermind"))).to.deep.equal([]);
+    // first poll: one look each; then only teku, straight to supervisorctl; vpn never again
+    expect(execs.map(a => `${a[1]} ${a[2]}`)).to.deep.equal([
+      "DAppNodePackage-teku.avado.dnp.dappnode.eth sh",
+      "DAppNodeCore-vpn.dnp.dappnode.eth sh",
+      "DAppNodePackage-teku.avado.dnp.dappnode.eth supervisorctl",
+      "DAppNodePackage-teku.avado.dnp.dappnode.eth supervisorctl"
+    ]);
+    expect(docker.filter(a => a[0] !== "exec").map(a => a[0])).to.deep.equal(["ps", "inspect", "ps", "inspect", "ps", "inspect"]);
+  });
+
   it("network only still runs the host script once, for the interfaces", async () => {
     const { getDiagnostics, calls } = setup();
     const { result } = await getDiagnostics({ host: false, network: true, logs: false, clients: false });

@@ -89,6 +89,9 @@ function formatContainer(info, status, now = Date.now()) {
   // Used for the client probes, not returned
   Object.defineProperty(c, "ip", { value: dncore.IPAddress || null, enumerable: false });
   Object.defineProperty(c, "running", { value: running, enumerable: false });
+  // Key of the "has supervisord" cache: a recreated container or a new image
+  // is looked at again
+  Object.defineProperty(c, "cacheKey", { value: info.Id ? `${info.Id}|${info.Image || image}` : null, enumerable: false });
   return c;
 }
 
@@ -113,26 +116,72 @@ function parseSupervisorStatus(out) {
 }
 
 const NOT_EXECUTABLE = /executable file not found|no such file or directory|OCI runtime exec failed/i;
+const NO_SUPERVISORD = "__no_supervisord__";
+
+// Whether a container has /etc/supervisord.conf, per container id + image id,
+// for the life of this process: the Admin polls processes every 60 s from
+// every open tab, so after the first look a container costs one
+// `docker exec supervisorctl status`, or nothing when it has no supervisord.
+// A recreated container or a new image is a new key.
+const hasSupervisord = new Map();
+const CACHE_MAX = 1000;
+
+const remember = (key, value) => {
+  if (!key) return;
+  if (hasSupervisord.size >= CACHE_MAX) hasSupervisord.clear();
+  hasSupervisord.set(key, value);
+};
 
 /**
  * The supervisord processes of a running container, [] when it has no
  * /etc/supervisord.conf (or no shell)
+ * @param {string} name container name
+ * @param {object} options { timeout, cacheKey: "<container id>|<image id>" }
  */
-async function readProcesses(name, { timeout = 5 * 1000 } = {}) {
+async function readProcesses(name, { timeout = 5 * 1000, cacheKey = null } = {}) {
+  const known = cacheKey ? hasSupervisord.get(cacheKey) : undefined;
+  if (known === false) return [];
+
+  // First look: find out and read in the same exec
+  const args =
+    known === true
+      ? ["exec", name, "supervisorctl", "-c", SUPERVISOR_CONF, "status"]
+      : [
+          "exec",
+          name,
+          "sh",
+          "-c",
+          `[ -f ${SUPERVISOR_CONF} ] || { echo ${NO_SUPERVISORD}; exit 0; }; supervisorctl -c ${SUPERVISOR_CONF} status; exit 0`
+        ];
+  const res = await run("docker", args, { timeout });
+  const out = res.stdout.trim();
+  if (out === NO_SUPERVISORD) {
+    remember(cacheKey, false);
+    return [];
+  }
   // supervisorctl exits non-zero when a process is not running: the output
   // is what counts
-  const script = `[ -f ${SUPERVISOR_CONF} ] || exit 0; supervisorctl -c ${SUPERVISOR_CONF} status; exit 0`;
-  const res = await run("docker", ["exec", name, "sh", "-c", script], { timeout });
-  if (res.code !== 0) {
-    if (NOT_EXECUTABLE.test(res.stderr) || NOT_EXECUTABLE.test(res.stdout)) return [];
-    throw Error((res.stderr || res.stdout).trim().split("\n")[0] || `exit code ${res.code}`);
-  }
-  const out = res.stdout.trim();
-  if (!out) return [];
   const processes = parseSupervisorStatus(out);
+  if (processes.length) {
+    remember(cacheKey, true);
+    return processes;
+  }
+  if (res.code !== 0) {
+    // No shell in the image: nothing to read, now or later
+    if (known !== true && (NOT_EXECUTABLE.test(res.stderr) || NOT_EXECUTABLE.test(res.stdout))) {
+      remember(cacheKey, false);
+      return [];
+    }
+    throw Error(scrub((res.stderr || res.stdout).trim().split("\n")[0]) || `exit code ${res.code}`);
+  }
+  if (!out) return [];
   // supervisord not answering: "unix:///dev/shm/supervisor.sock no such file"
-  if (!processes.length) throw Error(scrub(out.split("\n")[0]));
-  return processes;
+  throw Error(scrub(out.split("\n")[0]));
+}
+
+// Tests only
+function _resetSupervisordCache() {
+  hasSupervisord.clear();
 }
 
 const tsOf = line => {
@@ -192,6 +241,7 @@ module.exports = {
   formatContainer,
   parseSupervisorStatus,
   readProcesses,
+  _resetSupervisordCache,
   summarizeLogs,
   readLog,
   readSettings,
