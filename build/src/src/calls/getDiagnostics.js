@@ -17,7 +17,9 @@ const { withTimeout, mapLimit, errorMessage } = require("modules/diagnostics/tim
  *
  * The Admin polls { host: false, network: false, logs: false, clients: false }
  * every 60 s (containers and processes only: no host run, no docker logs);
- * the support report asks for everything.
+ * the support report asks for everything. Concurrent callers of the same
+ * variant share one collection; its result is reused for 10 s (light) or
+ * 20 s (any other variant).
  *
  * @param {object} kwargs { host, network, logs, clients } all default true
  * @returns {object} { message, result } result: see the spec
@@ -34,8 +36,7 @@ const DOCKER_CONCURRENCY = 6;
 
 const TIMED_OUT = Symbol("timed out");
 
-async function getDiagnostics(kwargs) {
-  const opts = Object.assign({ host: true, network: true, logs: true, clients: true }, kwargs || {});
+async function collect(opts) {
   const t0 = Date.now();
   const errors = [];
   const pending = new Set();
@@ -64,7 +65,9 @@ async function getDiagnostics(kwargs) {
   };
 
   // A docker job for mapLimit that knows its probe name before it starts
-  const named = (name, fn) => Object.assign(() => fn(name), { probeName: name });
+  // Once the cap has passed, a job still waiting for its turn is not started
+  // (it is already reported as timed out)
+  const named = (name, fn) => Object.assign(() => (closed ? Promise.resolve() : fn(name)), { probeName: name });
 
   const result = {
     collectedAt: new Date(t0).toISOString(),
@@ -194,7 +197,42 @@ async function getDiagnostics(kwargs) {
   };
 }
 
+// The Admin polls the light variant every 60 s from every open tab, and the
+// Help pages ask for the full report: callers asking for the same variant
+// share one collection while it runs, and its result for a while after.
+const LIGHT_CACHE_MS = 10 * 1000;
+const CACHE_MS = 20 * 1000;
+const inFlight = new Map();
+const cache = new Map();
+let clock = () => Date.now();
+
+async function getDiagnostics(kwargs) {
+  const k = kwargs || {};
+  const opts = {};
+  for (const name of ["host", "network", "logs", "clients"]) opts[name] = k[name] !== false;
+  const key = ["host", "network", "logs", "clients"].map(n => (opts[n] ? 1 : 0)).join("");
+  const ttl = key === "0000" ? LIGHT_CACHE_MS : CACHE_MS;
+
+  const hit = cache.get(key);
+  if (hit && clock() - hit.at < ttl) return hit.value;
+  if (!inFlight.has(key)) {
+    const run = collect(opts)
+      .then(value => {
+        cache.set(key, { at: clock(), value });
+        return value;
+      })
+      .finally(() => inFlight.delete(key));
+    inFlight.set(key, run);
+  }
+  return inFlight.get(key);
+}
+
 // Tests only
 getDiagnostics._setCapMs = ms => (CAP_MS = ms);
+getDiagnostics._setClock = fn => (clock = fn);
+getDiagnostics._resetCache = () => {
+  cache.clear();
+  inFlight.clear();
+};
 
 module.exports = getDiagnostics;

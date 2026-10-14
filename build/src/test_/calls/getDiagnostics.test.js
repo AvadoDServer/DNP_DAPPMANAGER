@@ -153,6 +153,8 @@ describe("Call: getDiagnostics", () => {
     });
     const light = { host: false, network: false, logs: false, clients: false };
     for (let poll = 0; poll < 3; poll++) {
+      // three polls more than 10 s apart: no shared result
+      getDiagnostics._resetCache();
       const { result } = await getDiagnostics(light);
       expect(result.errors).to.deep.equal([]);
       expect(result.containers.find(c => c.id === "teku.avado.dnp.dappnode.eth").processes).to.have.length(4);
@@ -257,6 +259,57 @@ describe("Call: getDiagnostics", () => {
     } finally {
       getDiagnostics._setCapMs(24000);
     }
+  });
+
+  it("after the cap, docker jobs still waiting for a turn are dropped, not started", async () => {
+    const many = Array.from({ length: 8 }, (_, i) =>
+      realContainers.formatContainer(
+        Object.assign({}, f.tekuInspect, { Name: `/DAppNodePackage-app${i}.avado.dnp.dappnode.eth` }),
+        "Up",
+        now
+      )
+    );
+    const slow = () => new Promise(r => setTimeout(() => r([]), 100));
+    const { getDiagnostics, calls } = setup({ readContainers: async () => many, readProcesses: slow });
+    getDiagnostics._setCapMs(50);
+    try {
+      const { result } = await getDiagnostics({ host: false, network: false, logs: false, clients: false });
+      expect(result.errors).to.have.length(8);
+      await new Promise(r => setTimeout(r, 250));
+      // the first 6 finished after the cap; the 2 queued ones never ran
+      expect(calls.filter(c => c === "processes")).to.have.length(6);
+    } finally {
+      getDiagnostics._setCapMs(24000);
+    }
+  });
+
+  it("concurrent callers of the same variant share one collection; the result is reused for 20 s (10 s light)", async () => {
+    const { getDiagnostics, calls } = setup();
+    let t = 1000000;
+    getDiagnostics._setClock(() => t);
+    const count = name => calls.filter(c => c === name).length;
+
+    const [a, b] = await Promise.all([getDiagnostics({}), getDiagnostics({ host: true })]);
+    expect(a).to.equal(b);
+    expect(count("host")).to.equal(1);
+    t += 19 * 1000;
+    expect(await getDiagnostics({})).to.equal(a);
+    expect(count("host")).to.equal(1);
+    t += 2 * 1000;
+    const c = await getDiagnostics({});
+    expect(c).to.not.equal(a);
+    expect(count("host")).to.equal(2);
+
+    // the light variant is its own entry, kept 10 s
+    const light = { host: false, network: false, logs: false, clients: false };
+    const containersBefore = count("containers");
+    const l1 = await getDiagnostics(light);
+    t += 9 * 1000;
+    expect(await getDiagnostics(light)).to.equal(l1);
+    t += 2 * 1000;
+    expect(await getDiagnostics(light)).to.not.equal(l1);
+    expect(count("containers") - containersBefore).to.equal(2);
+    expect(count("host")).to.equal(2);
   });
 
   it("the cap is under 25 s", () => {
