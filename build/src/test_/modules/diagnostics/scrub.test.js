@@ -26,13 +26,40 @@ describe("Module: diagnostics/scrub", () => {
     expect(scrub("ws://only-token@host:8546")).to.equal("ws://<redacted>@host:8546");
   });
 
-  it("redacts 12+ lowercase words in a row (a mnemonic)", () => {
+  it("redacts 12 to 24 lowercase words in a row (a mnemonic)", () => {
     const words = "abandon ability able about above absent absorb abstract absurd abuse access accident";
-    expect(scrub(`seed phrase: ${words}`)).to.not.include("abandon");
-    expect(scrub(`Imported ${words}. Done`)).to.equal("Imported <12+ words redacted>. Done");
+    expect(scrub(`seed phrase: ${words}`)).to.equal("seed phrase: <12+ words redacted>");
+    expect(scrub(`mnemonic=${words}`)).to.equal("mnemonic=<12+ words redacted>");
+    expect(scrub(`Imported ${words}`)).to.equal("Imported <12+ words redacted>");
+    expect(scrub(`Seed words ["${words.split(" ").join('","')}"]`)).to.not.include("abandon");
+    expect(scrub(`first line 1\n${words}\nlast: 2`)).to.equal("first line 1\n<12+ words redacted>\nlast: 2");
     // shorter runs stay
     expect(scrub("the beacon node is not connected to the execution client")).to.equal(
       "the beacon node is not connected to the execution client"
+    );
+  });
+
+  it("keeps an ordinary log sentence of 14 lowercase words with a digit or a colon", () => {
+    const withDigit = "teku is starting the beacon chain node and will load the state from slot 9";
+    const withColon = "warn: teku is starting the beacon chain node and will load the latest state";
+    const withStop = "teku is starting the beacon chain node and will load the latest state now.";
+    expect(scrub(withDigit)).to.equal(withDigit);
+    expect(scrub(withColon)).to.equal(withColon);
+    expect(scrub(withStop)).to.equal(withStop);
+  });
+
+  it("redacts secrets in URL queries and paths", () => {
+    expect(scrub("GET https://relay.example.org/eth?key=s3cr3t&slot=5")).to.equal(
+      "GET https://relay.example.org/eth?key=<redacted>&slot=5"
+    );
+    expect(scrub("https://api.example.org/v1/apikey/abc123/data")).to.equal("https://api.example.org/v1/apikey=<redacted>/data");
+    expect(scrub("ee https://mainnet.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161 down")).to.equal(
+      "ee https://mainnet.infura.io/v3/<redacted> down"
+    );
+    expect(scrub("https://x.quiknode.pro/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/")).to.equal("https://x.quiknode.pro/<redacted>/");
+    // ordinary paths stay
+    expect(scrub("https://beaconstate.info/eth/v2/debug/beacon/states/finalized")).to.equal(
+      "https://beaconstate.info/eth/v2/debug/beacon/states/finalized"
     );
   });
 
