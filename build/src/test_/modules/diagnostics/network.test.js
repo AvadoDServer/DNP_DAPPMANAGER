@@ -110,4 +110,31 @@ describe("Module: diagnostics/network", () => {
     r = await load({ cat: async () => Promise.reject(Error("Ipfs hash not available: QmStore")) }).network.checkCatalogue();
     expect(r).to.include({ ok: false, error: "IPFS: Ipfs hash not available: QmStore" });
   });
+
+  it("catalogue: a timeout names its step too", async () => {
+    const hang = () => new Promise(() => {});
+    // rpc.ava.do never answers
+    const rpcHang = proxyquire("modules/diagnostics/network", {
+      dns: { promises: { lookup: async () => ({}) } },
+      jayson: { client: { https: () => ({ request: () => {} }) } },
+      params: { IPFS_STORE_PEERS: [] },
+      db: { get: async () => "0xnode" },
+      "modules/ipfs": { cat: hang },
+      "modules/ipfsNode": { readHealth: hang, api: hang },
+      "modules/dockerList": { listContainers: async () => [] },
+      "./http": { head: hang }
+    });
+    rpcHang._setCatalogueTimeout(30);
+    expect(await rpcHang.checkCatalogue()).to.include({ ok: false, error: "rpc.ava.do: timed out after 0 s" });
+
+    const ipfsHang = load({ cat: hang }).network;
+    ipfsHang._setCatalogueTimeout(30);
+    expect(await ipfsHang.checkCatalogue()).to.include({ ok: false, error: "IPFS: timed out after 0 s" });
+  });
+
+  it("catalogue: with the real 8 s budget the message reads 8 s", () => {
+    const src = require("fs").readFileSync(require.resolve("modules/diagnostics/network"), "utf8");
+    expect(src).to.include("let CATALOGUE_TIMEOUT = 8000;");
+    expect(src).to.include("timed out after ${Math.round(CATALOGUE_TIMEOUT / 1000)} s");
+  });
 });

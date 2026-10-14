@@ -18,7 +18,7 @@ const DNS_NAMES = ["bo.ava.do", "iso.ava.do"];
 const INTERNET_URLS = ["https://bo.ava.do/"];
 const DNS_TIMEOUT = 5000;
 const INTERNET_TIMEOUT = 5000;
-const CATALOGUE_TIMEOUT = 8000;
+let CATALOGUE_TIMEOUT = 8000;
 const IPFS_API_TIMEOUT = 5000;
 
 const since = t0 => Date.now() - t0;
@@ -111,31 +111,44 @@ function storeGetUpdates(request) {
  * The fetch behind "Can't check for updates": rpc.ava.do names the store
  * this box sees (store.getUpdates, as the auto-updater asks), the catalogue
  * itself comes through our IPFS module. ok=true means updates can be checked.
+ *
+ * Both steps share the 8 s budget, each under its own deadline, so every
+ * failure, a timeout included, starts with the step that failed:
+ * "rpc.ava.do: …" or "IPFS: …".
  * @returns {Promise<{ ok, ms, error? }>}
  */
-function checkCatalogue() {
-  return timed(async () => {
-    let hash;
+async function checkCatalogue() {
+  const t0 = Date.now();
+  const budget = `timed out after ${Math.round(CATALOGUE_TIMEOUT / 1000)} s`;
+  const left = () => Math.max(CATALOGUE_TIMEOUT - since(t0), 1);
+  const step = async (name, fn) => {
     try {
+      return await withTimeout(fn(), left(), budget);
+    } catch (e) {
+      throw Error(`${name}: ${errorMessage(e)}`);
+    }
+  };
+  try {
+    const result = await step("rpc.ava.do", async () => {
       const packages = await dockerList.listContainers();
-      const result = await storeGetUpdates({
+      return storeGetUpdates({
         packages: packages.map(p => ({ name: p.name, version: p.version })),
         nodeid: await db.get("address")
       });
+    });
+    let hash;
+    try {
       hash = JSON.parse(result).hash;
     } catch (e) {
-      throw Error(`rpc.ava.do: ${errorMessage(e)}`);
+      throw Error(`rpc.ava.do: unexpected answer`);
     }
     if (!hash) throw Error("rpc.ava.do: no store hash in the answer");
-    let store;
-    try {
-      store = JSON.parse(await ipfs.cat(hash));
-    } catch (e) {
-      throw Error(`IPFS: ${errorMessage(e)}`);
-    }
+    const store = await step("IPFS", async () => JSON.parse(await ipfs.cat(hash)));
     if (!store || !Array.isArray(store.packages)) throw Error("IPFS: the catalogue has no packages");
-    return null;
-  }, CATALOGUE_TIMEOUT);
+    return { ok: true, ms: since(t0) };
+  } catch (e) {
+    return { ok: false, ms: since(t0), error: e.message };
+  }
 }
 
 module.exports = {
@@ -144,5 +157,7 @@ module.exports = {
   checkDns,
   checkInternet,
   readIpfsStore,
-  checkCatalogue
+  checkCatalogue,
+  // Tests only
+  _setCatalogueTimeout: ms => (CATALOGUE_TIMEOUT = ms)
 };
