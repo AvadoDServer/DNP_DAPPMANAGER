@@ -175,7 +175,8 @@ function parseTemperatures(ls) {
   for (const l of ls) {
     const [name, label, milli] = l.split("\t");
     const c = num((milli || "").trim());
-    if (c === null) continue;
+    // A sensor that reads 0 (unwired acpitz) or an absurd value is no reading
+    if (c === null || c <= 0 || c > 150 * 1000) continue;
     const n = [name, label].map(s => (s || "").trim()).filter(Boolean).join(" ");
     temps.push({ name: n || "sensor", celsius: round1(c / 1000) });
   }
