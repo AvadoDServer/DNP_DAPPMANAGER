@@ -92,9 +92,15 @@ describe("Module: diagnostics/containers", () => {
     expect(list.map(c => c.id)).to.deep.equal(["teku.avado.dnp.dappnode.eth"]);
   });
 
-  it("reads processes with supervisorctl when /etc/supervisord.conf exists, [] when not", async () => {
+  const FIRST_LOOK =
+    "if [ -f /etc/supervisord.conf ]; then echo __conf__=/etc/supervisord.conf; supervisorctl -c /etc/supervisord.conf status; exit 0; fi; " +
+    "if [ -f /etc/supervisord/supervisord.conf ]; then echo __conf__=/etc/supervisord/supervisord.conf; supervisorctl -c /etc/supervisord/supervisord.conf status; exit 0; fi; " +
+    "echo __no_supervisord__; exit 0";
+  const firstLook = (conf, status) => `__conf__=${conf}\n${status}`;
+
+  it("reads processes with supervisorctl when a supervisord config exists, [] when not", async () => {
     const calls = [];
-    let answer = { code: 0, stdout: f.tekuSupervisor, stderr: "" };
+    let answer = { code: 3, stdout: firstLook("/etc/supervisord.conf", f.tekuSupervisor), stderr: "" };
     const run = async (file, args, opts) => {
       calls.push({ args, opts });
       return answer;
@@ -102,35 +108,59 @@ describe("Module: diagnostics/containers", () => {
     const m = load(run);
     m._resetSupervisordCache();
     const p = await m.readProcesses("DAppNodePackage-teku.avado.dnp.dappnode.eth");
+    expect(p).to.have.length(4);
     expect(p[3]).to.deep.equal({ name: "teku", state: "FATAL", description: "Exited too quickly (process log may have details)" });
-    expect(calls[0].args.slice(0, 4)).to.deep.equal(["exec", "DAppNodePackage-teku.avado.dnp.dappnode.eth", "sh", "-c"]);
-    expect(calls[0].args[4]).to.equal(
-      "[ -f /etc/supervisord.conf ] || { echo __no_supervisord__; exit 0; }; supervisorctl -c /etc/supervisord.conf status; exit 0"
-    );
+    expect(calls[0].args).to.deep.equal(["exec", "DAppNodePackage-teku.avado.dnp.dappnode.eth", "sh", "-c", FIRST_LOOK]);
     expect(calls[0].opts).to.deep.equal({ timeout: 5000 });
 
     answer = { code: 0, stdout: "__no_supervisord__\n", stderr: "" };
     expect(await m.readProcesses("x")).to.deep.equal([]);
     answer = { code: 126, stdout: "", stderr: 'OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH: unknown' };
     expect(await m.readProcesses("x")).to.deep.equal([]);
-    answer = { code: 0, stdout: "unix:///dev/shm/supervisor.sock no such file", stderr: "" };
+    answer = { code: 0, stdout: firstLook("/etc/supervisord.conf", "error: <class 'xmlrpc.client.Fault'>, <Fault 6: 'SHUTDOWN_STATE'>"), stderr: "" };
     let err;
     await m.readProcesses("x").catch(e => (err = e));
-    expect(err.message).to.equal("unix:///dev/shm/supervisor.sock no such file");
+    expect(err.message).to.equal("error: <class 'xmlrpc.client.Fault'>, <Fault 6: 'SHUTDOWN_STATE'>");
   });
 
-  it("remembers per container id + image whether it has supervisord: one exec per poll, none without it", async () => {
+  it("a config but no supervisord running (bind): [] and no error", async () => {
+    for (const said of [
+      { stdout: firstLook("/etc/supervisord.conf", "unix:///run/supervisord.sock no such file"), code: 4 },
+      { stdout: firstLook("/etc/supervisord.conf", "unix:///var/run/supervisor.sock refused connection"), code: 7 },
+      { stdout: "__conf__=/etc/supervisord.conf", stderr: "error: <class 'ConnectionRefusedError'>, [Errno 111] Connection refused: file: /usr/lib/python3/dist-packages/supervisor/xmlrpc.py line: 560", code: 2 }
+    ]) {
+      const m = load(async () => Object.assign({ stderr: "" }, said));
+      m._resetSupervisordCache();
+      expect(await m.readProcesses("DAppNodeCore-bind.dnp.dappnode.eth", { cacheKey: "b|img" }), said.stdout).to.deep.equal([]);
+    }
+  });
+
+  it("finds Qtum's /etc/supervisord/supervisord.conf and remembers that path", async () => {
     const calls = [];
-    const answers = {
-      teku: { code: 0, stdout: f.tekuSupervisor, stderr: "" },
-      busy: { code: 0, stdout: "__no_supervisord__", stderr: "" },
-      // supervisorctl exits 3 when a process is not running
-      tekuDirect: { code: 3, stdout: f.tekuSupervisor, stderr: "" }
-    };
+    const status = "qtumd                            RUNNING   pid 10, uptime 3 days, 1:00:00";
+    const m = load(async (file, args) => {
+      calls.push(args);
+      return args[2] === "sh"
+        ? { code: 0, stdout: firstLook("/etc/supervisord/supervisord.conf", status), stderr: "" }
+        : { code: 0, stdout: status, stderr: "" };
+    });
+    m._resetSupervisordCache();
+    expect(await m.readProcesses("qtum", { cacheKey: "q|img" })).to.deep.equal([
+      { name: "qtumd", state: "RUNNING", description: "pid 10, uptime 3 days, 1:00:00" }
+    ]);
+    await m.readProcesses("qtum", { cacheKey: "q|img" });
+    expect(calls[1]).to.deep.equal(["exec", "qtum", "supervisorctl", "-c", "/etc/supervisord/supervisord.conf", "status"]);
+  });
+
+  it("remembers per container id + image where supervisord is: one exec per poll, none without it", async () => {
+    const calls = [];
     const run = async (file, args) => {
       calls.push(args);
-      if (args[1] === "busy") return answers.busy;
-      return args[2] === "supervisorctl" ? answers.tekuDirect : answers.teku;
+      if (args[1] === "busy") return { code: 0, stdout: "__no_supervisord__", stderr: "" };
+      // supervisorctl exits 3 when a process is not running
+      return args[2] === "supervisorctl"
+        ? { code: 3, stdout: f.tekuSupervisor, stderr: "" }
+        : { code: 0, stdout: firstLook("/etc/supervisord.conf", f.tekuSupervisor), stderr: "" };
     };
     const m = load(run);
     m._resetSupervisordCache();
@@ -167,7 +197,7 @@ describe("Module: diagnostics/containers", () => {
     await m.readProcesses("teku", { cacheKey: "c1|img" }).catch(e => (err = e));
     expect(err.message).to.equal("OCI runtime exec failed: exec failed: cannot exec in a stopped container: unknown");
     // looked at again on the next poll, and found
-    answer = { code: 3, stdout: f.tekuSupervisor, stderr: "" };
+    answer = { code: 3, stdout: firstLook("/etc/supervisord.conf", f.tekuSupervisor), stderr: "" };
     expect(await m.readProcesses("teku", { cacheKey: "c1|img" })).to.have.length(4);
     expect(calls.map(a => a[2])).to.deep.equal(["sh", "sh"]);
   });
@@ -225,5 +255,12 @@ describe("Module: diagnostics/containers", () => {
     expect(args).to.deep.equal(["exec", "c", "cat", "/data/settings.json"]);
     answer = { code: 1, stdout: "", stderr: "cat: /data/settings.json: No such file or directory" };
     expect(await m.readSettings("c", "/data/settings.json")).to.equal(null);
+    // double-encoded: parses to a string; arrays and numbers neither
+    for (const stdout of [JSON.stringify(JSON.stringify({ a: 1 })), "[1,2]", "42", "null"]) {
+      answer = { code: 0, stdout, stderr: "" };
+      let err;
+      await m.readSettings("c", "/data/settings.json").catch(e => (err = e));
+      expect(err && err.message, stdout).to.equal("not an object");
+    }
   });
 });

@@ -42,7 +42,7 @@ describe("Call: getDiagnostics", () => {
       ),
       readProcesses: record("processes", over.readProcesses || (async () => realContainers.parseSupervisorStatus(f.tekuSupervisor))),
       readLog: record("logs", async () => realContainers.summarizeLogs(f.tekuLogs)),
-      readSettings: record("settings", async () => ({ ee_endpoint: "http://avado-dnp-nethermind.my.ava.do:8551" }))
+      readSettings: record("settings", over.readSettings || (async () => ({ ee_endpoint: "http://avado-dnp-nethermind.my.ava.do:8551" })))
     };
     const clients = {
       getClient: realClients.getClient,
@@ -135,7 +135,10 @@ describe("Call: getDiagnostics", () => {
         return { code: 0, stdout: JSON.stringify([f.tekuInspect, f.nethermindInspect, busyboxInspect]), stderr: "" };
       if (args[0] === "exec" && args[1] === "DAppNodeCore-vpn.dnp.dappnode.eth")
         return { code: 0, stdout: "__no_supervisord__", stderr: "" };
-      if (args[0] === "exec") return { code: args[2] === "supervisorctl" ? 3 : 0, stdout: f.tekuSupervisor, stderr: "" };
+      if (args[0] === "exec")
+        return args[2] === "supervisorctl"
+          ? { code: 3, stdout: f.tekuSupervisor, stderr: "" }
+          : { code: 0, stdout: `__conf__=/etc/supervisord.conf\n${f.tekuSupervisor}`, stderr: "" };
       throw Error(`unexpected docker ${args.join(" ")}`);
     };
     const exec = { run, runOk: async (...a) => (await run(...a)).stdout };
@@ -242,6 +245,17 @@ describe("Call: getDiagnostics", () => {
     } finally {
       getDiagnostics._setCapMs(24000);
     }
+  });
+
+  it("a settings file that is not an object: settings null and an error", async () => {
+    const { getDiagnostics } = setup({
+      readSettings: async () => {
+        throw Error("not an object");
+      }
+    });
+    const { result } = await getDiagnostics({});
+    expect(result.errors).to.deep.equal(["settings teku.avado.dnp.dappnode.eth: not an object"]);
+    expect(result.containers[0].settings).to.equal(null);
   });
 
   it("a failing containers probe leaves containers and clients empty", async () => {

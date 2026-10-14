@@ -21,7 +21,8 @@ const LOG_ERROR = /error|fatal|panic|exception|failed|refused|timeout|out of mem
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g;
 
-const SUPERVISOR_CONF = "/etc/supervisord.conf";
+// Looked for in this order (Qtum keeps its config in /etc/supervisord/)
+const SUPERVISOR_CONFS = ["/etc/supervisord.conf", "/etc/supervisord/supervisord.conf"];
 const SUPERVISOR_STATES = ["RUNNING", "STARTING", "BACKOFF", "STOPPED", "EXITED", "FATAL", "UNKNOWN"];
 
 /**
@@ -117,72 +118,79 @@ function parseSupervisorStatus(out) {
 
 const NO_SHELL = /"sh": executable file not found/i;
 const NO_SUPERVISORD = "__no_supervisord__";
+const CONF_MARK = "__conf__=";
+// supervisorctl that finds no supervisord behind its socket: the container
+// has the config but does not run supervisord
+const NO_SUPERVISORD_RUNNING = /unix:\/\/|no such file|refused|ConnectionRefused|socket/i;
 
-// Whether a container has /etc/supervisord.conf, per container id + image id,
-// for the life of this process: the Admin polls processes every 60 s from
-// every open tab, so after the first look a container costs one
-// `docker exec supervisorctl status`, or nothing when it has no supervisord.
-// A recreated container or a new image is a new key.
-const hasSupervisord = new Map();
+// Where a container's supervisord config is (or false: none), per container
+// id + image id, for the life of this process: the Admin polls processes
+// every 60 s from every open tab, so after the first look a container costs
+// one `docker exec supervisorctl status`, or nothing when it has no
+// supervisord. A recreated container or a new image is a new key.
+const supervisordConf = new Map();
 const CACHE_MAX = 1000;
 
 const remember = (key, value) => {
   if (!key) return;
-  if (hasSupervisord.size >= CACHE_MAX) hasSupervisord.clear();
-  hasSupervisord.set(key, value);
+  if (supervisordConf.size >= CACHE_MAX) supervisordConf.clear();
+  supervisordConf.set(key, value);
 };
 
 /**
  * The supervisord processes of a running container, [] when it has no
- * /etc/supervisord.conf (or no shell)
+ * supervisord config (/etc/supervisord.conf, or Qtum's
+ * /etc/supervisord/supervisord.conf), no shell, or no supervisord running
  * @param {string} name container name
  * @param {object} options { timeout, cacheKey: "<container id>|<image id>" }
  */
 async function readProcesses(name, { timeout = 5 * 1000, cacheKey = null } = {}) {
-  const known = cacheKey ? hasSupervisord.get(cacheKey) : undefined;
+  const known = cacheKey ? supervisordConf.get(cacheKey) : undefined;
   if (known === false) return [];
 
-  // First look: find out and read in the same exec
-  const args =
-    known === true
-      ? ["exec", name, "supervisorctl", "-c", SUPERVISOR_CONF, "status"]
-      : [
-          "exec",
-          name,
-          "sh",
-          "-c",
-          `[ -f ${SUPERVISOR_CONF} ] || { echo ${NO_SUPERVISORD}; exit 0; }; supervisorctl -c ${SUPERVISOR_CONF} status; exit 0`
-        ];
+  // First look: find the config and read in the same exec
+  const find = SUPERVISOR_CONFS.map(
+    c => `if [ -f ${c} ]; then echo ${CONF_MARK}${c}; supervisorctl -c ${c} status; exit 0; fi`
+  ).join("; ");
+  const args = known
+    ? ["exec", name, "supervisorctl", "-c", known, "status"]
+    : ["exec", name, "sh", "-c", `${find}; echo ${NO_SUPERVISORD}; exit 0`];
   const res = await run("docker", args, { timeout });
-  const out = res.stdout.trim();
+  let out = res.stdout.trim();
   if (out === NO_SUPERVISORD) {
     remember(cacheKey, false);
     return [];
   }
+  let conf = known || null;
+  if (out.startsWith(CONF_MARK)) {
+    const nl = out.indexOf("\n");
+    conf = (nl === -1 ? out : out.slice(0, nl)).slice(CONF_MARK.length).trim();
+    out = nl === -1 ? "" : out.slice(nl + 1).trim();
+    remember(cacheKey, conf);
+  }
   // supervisorctl exits non-zero when a process is not running: the output
   // is what counts
   const processes = parseSupervisorStatus(out);
-  if (processes.length) {
-    remember(cacheKey, true);
-    return processes;
-  }
-  if (res.code !== 0) {
+  if (processes.length) return processes;
+  const said = `${out}\n${res.stderr}`;
+  if (res.code !== 0 && !conf) {
     // No shell in the image: nothing to read, now or later. Any other exec
     // failure (a container stopping under us) is reported and not remembered.
-    if (known !== true && NO_SHELL.test(`${res.stderr}\n${res.stdout}`)) {
+    if (NO_SHELL.test(said)) {
       remember(cacheKey, false);
       return [];
     }
     throw Error(scrub((res.stderr || res.stdout).trim().split("\n")[0]) || `exit code ${res.code}`);
   }
-  if (!out) return [];
-  // supervisord not answering: "unix:///dev/shm/supervisor.sock no such file"
-  throw Error(scrub(out.split("\n")[0]));
+  // A config but no supervisord behind it ("unix:///run/supervisord.sock no
+  // such file"): the container does not use supervisord, nothing to report
+  if (!said.trim() || NO_SUPERVISORD_RUNNING.test(said)) return [];
+  throw Error(scrub(said.trim().split("\n")[0]));
 }
 
 // Tests only
 function _resetSupervisordCache() {
-  hasSupervisord.clear();
+  supervisordConf.clear();
 }
 
 const tsOf = line => {
@@ -234,6 +242,8 @@ async function readSettings(name, path, { timeout = 5 * 1000 } = {}) {
   } catch (e) {
     throw Error(`${path} is not valid JSON`);
   }
+  // A double-encoded file parses to a string: not settings
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw Error("not an object");
   return scrubSettings(settings);
 }
 
