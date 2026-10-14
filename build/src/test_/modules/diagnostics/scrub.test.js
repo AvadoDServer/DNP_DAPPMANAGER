@@ -48,6 +48,28 @@ describe("Module: diagnostics/scrub", () => {
     expect(scrub(withStop)).to.equal(withStop);
   });
 
+  it("looks past docker's timestamp and the log level of a log line", () => {
+    const words = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+    for (const prefix of [
+      "2026-10-14T11:45:13.123456789Z ",
+      "2026-10-14T11:45:13Z INFO ",
+      "2026-10-14T11:45:13.123456789Z 11:45:13.123 INFO  - ",
+      "2026-10-14T11:45:13.123456789Z [WARN] ",
+      "2026-10-14T11:45:13.123456789Z ERROR - ",
+      "DEBUG "
+    ]) {
+      expect(scrub(`${prefix}${words}`), prefix).to.equal(`${prefix}<12+ words redacted>`);
+    }
+    expect(scrub(`2026-10-14T11:45:13.123456789Z Your recovery words: ${words}`)).to.not.include("abandon");
+    // through the log summary as getDiagnostics returns it
+    const { summarizeLogs } = require("modules/diagnostics/containers");
+    const s = summarizeLogs(`2026-10-14T11:45:13.123456789Z INFO ${words}\n`);
+    expect(s.lines).to.deep.equal(["2026-10-14T11:45:13.123456789Z INFO <12+ words redacted>"]);
+    // an ordinary 14-word sentence with a digit survives behind the same prefix
+    const sentence = "teku is starting the beacon chain node and will load the state from slot 9";
+    expect(scrub(`2026-10-14T11:45:13.123456789Z INFO ${sentence}`)).to.equal(`2026-10-14T11:45:13.123456789Z INFO ${sentence}`);
+  });
+
   it("redacts secrets in URL queries and paths", () => {
     expect(scrub("GET https://relay.example.org/eth?key=s3cr3t&slot=5")).to.equal(
       "GET https://relay.example.org/eth?key=<redacted>&slot=5"

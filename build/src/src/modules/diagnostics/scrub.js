@@ -13,9 +13,10 @@
  *   long random path segment (24+ letters and digits, an Infura-style key)
  *   becomes <redacted>
  * - 12 to 24 lowercase words of 3 to 8 letters in a row (a mnemonic):
- *   <12+ words redacted>, on a line with nothing but letters and spaces (an
- *   ordinary log sentence has a digit, a colon or a full stop), or on any
- *   line that names a mnemonic/seed/phrase
+ *   <12+ words redacted>, on a line whose message (after a docker timestamp,
+ *   a time and a log level) is nothing but letters and spaces (an ordinary
+ *   log sentence has a digit, a colon or a full stop), or on any line that
+ *   names a mnemonic/seed/phrase/recovery
  */
 
 const LONG_HEX = /[0-9a-fA-F]{64,}/g;
@@ -31,14 +32,21 @@ const RANDOM_SEGMENT = /\/([A-Za-z0-9_-]{24,})(?=[/?#]|$)/g;
 const WORD_RUN = /\b[a-z]{3,8}(?:[ \t]+[a-z]{3,8}){11,23}\b/g;
 const WORD_RUN_LOOSE = /\b[a-z]{3,8}(?:[\s,"']+[a-z]{3,8}){11,23}\b/g;
 const ONLY_WORDS = /^[A-Za-z \t]*$/;
-const MNEMONIC_HINT = /mnemonic|seed|phrase/i;
+const MNEMONIC_HINT = /mnemonic|seed|phrase|recovery/i;
+// What a log line starts with before its message: docker's --timestamps
+// (2026-10-14T11:45:13.123456789Z), an application time (11:45:13.123) and a
+// level (INFO, [WARN], ERROR -, …)
+const LINE_PREFIX = /^\s*(?:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d)?\s+)?(?:\d\d:\d\d:\d\d(?:[.,]\d+)?\s+)?(?:[[-]?\s*(?:INFO|WARN|WARNING|ERROR|DEBUG|FATAL|TRACE)\s*[\]-]?\s+(?:-\s+)?)?/i;
 
 function scrubMnemonics(text) {
   return text
     .split("\n")
     .map(line => {
       if (MNEMONIC_HINT.test(line)) return line.replace(WORD_RUN_LOOSE, "<12+ words redacted>");
-      if (ONLY_WORDS.test(line)) return line.replace(WORD_RUN, "<12+ words redacted>");
+      // The message itself must be nothing but letters and spaces
+      const prefix = (line.match(LINE_PREFIX) || [""])[0];
+      const message = line.slice(prefix.length);
+      if (ONLY_WORDS.test(message)) return prefix + message.replace(WORD_RUN, "<12+ words redacted>");
       return line;
     })
     .join("\n");
