@@ -6,30 +6,32 @@ const { runOk } = require("./exec");
  * the host, the pattern rebootHost and getInternalIp use. Read-only: the
  * script only reads /proc, /sys and /etc and runs df, ip and dmesg.
  *
- * Each section starts with a "### <name>" line; parseHostOutput splits them.
+ * Each section starts with a "### <name>" line (after an empty line, as a
+ * file such as /etc/os-release may not end with a newline); parseHostOutput
+ * splits them.
  */
 
 const HOST_TIMEOUT = 10 * 1000;
 
 const HOST_SCRIPT = [
   "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-  "echo '### uptime'; cat /proc/uptime",
-  "echo '### loadavg'; cat /proc/loadavg",
-  "echo '### cores'; grep -c '^processor' /proc/cpuinfo",
-  "echo '### meminfo'; cat /proc/meminfo",
-  "echo '### os'; cat /etc/os-release",
-  "echo '### kernel'; uname -r",
-  "echo '### df'; df -kP /",
-  "echo '### links'; ip -o link",
-  "echo '### addrs'; ip -o -4 addr",
-  "echo '### routes'; ip route",
+  "echo; echo '### uptime'; cat /proc/uptime",
+  "echo; echo '### loadavg'; cat /proc/loadavg",
+  "echo; echo '### cores'; grep -c '^processor' /proc/cpuinfo",
+  "echo; echo '### meminfo'; cat /proc/meminfo",
+  "echo; echo '### os'; cat /etc/os-release",
+  "echo; echo '### kernel'; uname -r",
+  "echo; echo '### df'; df -kP /",
+  "echo; echo '### links'; ip -o link",
+  "echo; echo '### addrs'; ip -o -4 addr",
+  "echo; echo '### routes'; ip route",
   // name operstate carrier wireless|-   (carrier cannot be read while the
   // interface is down: empty)
-  "echo '### netstate'; for n in /sys/class/net/*; do b=${n##*/}; w=-; [ -d \"$n/wireless\" ] && w=wireless; echo \"$b $(cat $n/operstate 2>/dev/null) $(cat $n/carrier 2>/dev/null) $w\"; done",
+  "echo; echo '### netstate'; for n in /sys/class/net/*; do b=${n##*/}; w=-; [ -d \"$n/wireless\" ] && w=wireless; echo \"$b $(cat $n/operstate 2>/dev/null) $(cat $n/carrier 2>/dev/null) $w\"; done",
   // hwmon-name <TAB> label <TAB> millidegrees
-  "echo '### hwmon'; for h in /sys/class/hwmon/hwmon*; do [ -d \"$h\" ] || continue; nm=$(cat $h/name 2>/dev/null); for t in $h/temp*_input; do [ -f \"$t\" ] || continue; l=${t%_input}_label; printf '%s\\t%s\\t%s\\n' \"$nm\" \"$(cat $l 2>/dev/null)\" \"$(cat $t 2>/dev/null)\"; done; done",
-  "echo '### dmesg'; dmesg -T 2>/dev/null | tail -n 400",
-  "echo '### end'"
+  "echo; echo '### hwmon'; for h in /sys/class/hwmon/hwmon*; do [ -d \"$h\" ] || continue; nm=$(cat $h/name 2>/dev/null); for t in $h/temp*_input; do [ -f \"$t\" ] || continue; l=${t%_input}_label; printf '%s\\t%s\\t%s\\n' \"$nm\" \"$(cat $l 2>/dev/null)\" \"$(cat $t 2>/dev/null)\"; done; done",
+  "echo; echo '### dmesg'; { dmesg -T 2>/dev/null || dmesg 2>/dev/null; } | tail -n 400",
+  "echo; echo '### end'"
 ].join("\n");
 
 const hostCommandArgs = () => [
@@ -179,6 +181,9 @@ function parseInterfaces(sections) {
     const up = s.operstate ? s.operstate === "up" : flags.includes("UP") && flags.includes("LOWER_UP");
     // carrier: "1" link, "0" no link; unreadable (interface down) counts as no link
     const carrier = s.carrier !== null && s.carrier !== undefined ? s.carrier === "1" : flags.includes("LOWER_UP");
+    // The kernel's idle tunnel devices (sit0, gre0, tunl0, bond0…): down,
+    // no address, nothing to say
+    if (type === "other" && !up && !(ipv4[name] || []).length) continue;
     interfaces.push({ name, type, up, carrier, ipv4: ipv4[name] || [] });
   }
   return interfaces;

@@ -148,7 +148,8 @@ describe("Module: diagnostics/host", () => {
     ]);
     expect(args[12]).to.equal(HOST_SCRIPT);
     for (const s of ["uptime", "loadavg", "meminfo", "os", "kernel", "df", "links", "addrs", "routes", "netstate", "hwmon", "dmesg"]) {
-      expect(HOST_SCRIPT).to.include(`### ${s}`);
+      // on its own line even after a file without a final newline
+      expect(HOST_SCRIPT).to.include(`echo; echo '### ${s}'`);
     }
     expect(HOST_SCRIPT.replace(/2>\/dev\/null/g, "")).to.not.match(/\b(rm|mv|kill|reboot|tee|dd)\b|>/);
 
