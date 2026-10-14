@@ -344,6 +344,27 @@ describe("Call: getDiagnostics", () => {
     expect(count("host")).to.equal(2);
   });
 
+  it("fresh: true skips the cached result but joins a collection in flight", async () => {
+    const { getDiagnostics, calls } = setup();
+    let t = 1000000;
+    getDiagnostics._setClock(() => t);
+    const count = () => calls.filter(c => c === "host").length;
+    const a = await getDiagnostics({});
+    t += 1000;
+    expect(await getDiagnostics({})).to.equal(a);
+    expect(count()).to.equal(1);
+    const b = await getDiagnostics({ fresh: true });
+    expect(b).to.not.equal(a);
+    expect(count()).to.equal(2);
+    // the fresh result is the cached one now
+    expect(await getDiagnostics({})).to.equal(b);
+    // concurrent: a fresh caller joins the run in flight
+    t += 60 * 1000;
+    const [c, d] = await Promise.all([getDiagnostics({}), getDiagnostics({ fresh: true })]);
+    expect(c).to.equal(d);
+    expect(count()).to.equal(3);
+  });
+
   it("the cap is under 25 s", () => {
     const src = require("fs").readFileSync(require.resolve("calls/getDiagnostics"), "utf8");
     const m = src.match(/let CAP_MS = (\d+) \* 1000/);

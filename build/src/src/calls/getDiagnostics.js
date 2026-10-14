@@ -19,9 +19,11 @@ const { withTimeout, mapLimit, errorMessage } = require("modules/diagnostics/tim
  * every 60 s (containers and processes only: no host run, no docker logs);
  * the support report asks for everything. Concurrent callers of the same
  * variant share one collection; its result is reused for 10 s (light) or
- * 20 s (any other variant).
+ * 20 s (any other variant) unless the caller passes fresh: true.
  *
- * @param {object} kwargs { host, network, logs, clients } all default true
+ * @param {object} kwargs { host, network, logs, clients } all default true;
+ *   fresh: true skips the cached result (Refresh), still sharing a
+ *   collection already in flight
  * @returns {object} { message, result } result: see the spec
  *   (collectedAt, durationMs, errors, host, network, containers, clients)
  */
@@ -213,8 +215,10 @@ async function getDiagnostics(kwargs) {
   const key = ["host", "network", "logs", "clients"].map(n => (opts[n] ? 1 : 0)).join("");
   const ttl = key === "0000" ? LIGHT_CACHE_MS : CACHE_MS;
 
+  // fresh: skip a cached result (an owner pressing Refresh after a fix), but
+  // still join a collection that is running
   const hit = cache.get(key);
-  if (hit && clock() - hit.at < ttl) return hit.value;
+  if (!k.fresh && hit && clock() - hit.at < ttl) return hit.value;
   if (!inFlight.has(key)) {
     const run = collect(opts)
       .then(value => {
