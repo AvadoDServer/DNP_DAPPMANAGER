@@ -151,6 +151,27 @@ describe("Module: diagnostics/containers", () => {
     expect(calls[4].slice(2, 4)).to.deep.equal(["sh", "-c"]);
   });
 
+  it("an exec error is reported and does not poison the cache", async () => {
+    const calls = [];
+    let answer = {
+      code: 126,
+      stdout: "",
+      stderr: "OCI runtime exec failed: exec failed: cannot exec in a stopped container: unknown"
+    };
+    const m = load(async (file, args) => {
+      calls.push(args);
+      return answer;
+    });
+    m._resetSupervisordCache();
+    let err;
+    await m.readProcesses("teku", { cacheKey: "c1|img" }).catch(e => (err = e));
+    expect(err.message).to.equal("OCI runtime exec failed: exec failed: cannot exec in a stopped container: unknown");
+    // looked at again on the next poll, and found
+    answer = { code: 3, stdout: f.tekuSupervisor, stderr: "" };
+    expect(await m.readProcesses("teku", { cacheKey: "c1|img" })).to.have.length(4);
+    expect(calls.map(a => a[2])).to.deep.equal(["sh", "sh"]);
+  });
+
   it("the cache key is the container id + image id, not returned", () => {
     const { formatContainer } = require("modules/diagnostics/containers");
     const c = formatContainer(f.tekuInspect, "Up", now);

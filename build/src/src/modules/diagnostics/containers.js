@@ -115,7 +115,7 @@ function parseSupervisorStatus(out) {
   return processes;
 }
 
-const NOT_EXECUTABLE = /executable file not found|no such file or directory|OCI runtime exec failed/i;
+const NO_SHELL = /"sh": executable file not found/i;
 const NO_SUPERVISORD = "__no_supervisord__";
 
 // Whether a container has /etc/supervisord.conf, per container id + image id,
@@ -167,8 +167,9 @@ async function readProcesses(name, { timeout = 5 * 1000, cacheKey = null } = {})
     return processes;
   }
   if (res.code !== 0) {
-    // No shell in the image: nothing to read, now or later
-    if (known !== true && (NOT_EXECUTABLE.test(res.stderr) || NOT_EXECUTABLE.test(res.stdout))) {
+    // No shell in the image: nothing to read, now or later. Any other exec
+    // failure (a container stopping under us) is reported and not remembered.
+    if (known !== true && NO_SHELL.test(`${res.stderr}\n${res.stdout}`)) {
       remember(cacheKey, false);
       return [];
     }
