@@ -6,6 +6,8 @@ function withTimeout(promise, ms, message = "timed out") {
   let timer;
   const timeout = new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(Error(message)), ms);
+    // A timeout alone never keeps the process alive
+    if (timer.unref) timer.unref();
   });
   return Promise.race([Promise.resolve(promise), timeout]).then(
     value => {

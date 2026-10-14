@@ -63,6 +63,9 @@ async function getDiagnostics(kwargs) {
     );
   };
 
+  // A docker job for mapLimit that knows its probe name before it starts
+  const named = (name, fn) => Object.assign(() => fn(name), { probeName: name });
+
   const result = {
     collectedAt: new Date(t0).toISOString(),
     durationMs: 0,
@@ -123,19 +126,19 @@ async function getDiagnostics(kwargs) {
         const running = list.filter(c => c.running);
         const jobs = [];
         for (const c of running) {
-          jobs.push(() =>
-            probe(`processes ${c.id}`, PROCESSES_TIMEOUT + 500, () =>
+          jobs.push(named(`processes ${c.id}`, name =>
+            probe(name, PROCESSES_TIMEOUT + 500, () =>
               containers.readProcesses(c.name, { timeout: PROCESSES_TIMEOUT })
             ).then(p => !closed && (c.processes = p || []))
-          );
+          ));
         }
         if (opts.logs) {
           for (const c of list) {
-            jobs.push(() =>
-              probe(`logs ${c.id}`, LOGS_TIMEOUT + 500, () => containers.readLog(c.name, { timeout: LOGS_TIMEOUT })).then(
+            jobs.push(named(`logs ${c.id}`, name =>
+              probe(name, LOGS_TIMEOUT + 500, () => containers.readLog(c.name, { timeout: LOGS_TIMEOUT })).then(
                 l => !closed && (c.log = l)
               )
-            );
+            ));
           }
         }
         const clientJobs = [];
@@ -144,11 +147,11 @@ async function getDiagnostics(kwargs) {
             const client = clients.getClient(c.id);
             if (!client) continue;
             if (client.settingsPath && c.running) {
-              jobs.push(() =>
-                probe(`settings ${c.id}`, SETTINGS_TIMEOUT + 500, () =>
+              jobs.push(named(`settings ${c.id}`, name =>
+                probe(name, SETTINGS_TIMEOUT + 500, () =>
                   containers.readSettings(c.name, client.settingsPath, { timeout: SETTINGS_TIMEOUT })
                 ).then(s => !closed && (c.settings = s))
-              );
+              ));
             }
             // HTTP, not docker: not limited with the docker jobs
             clientJobs.push(
@@ -158,6 +161,8 @@ async function getDiagnostics(kwargs) {
             );
           }
         }
+        // A job still waiting for its turn at the cap is reported too
+        for (const job of jobs) pending.add(job.probeName);
         await Promise.all([mapLimit(jobs, DOCKER_CONCURRENCY, job => job()), ...clientJobs]);
       }
     )

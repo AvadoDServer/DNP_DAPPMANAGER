@@ -40,7 +40,7 @@ describe("Call: getDiagnostics", () => {
             realContainers.formatContainer(f.nethermindInspect, "Exited (137) 5 minutes ago", now)
           ])
       ),
-      readProcesses: record("processes", async () => realContainers.parseSupervisorStatus(f.tekuSupervisor)),
+      readProcesses: record("processes", over.readProcesses || (async () => realContainers.parseSupervisorStatus(f.tekuSupervisor))),
       readLog: record("logs", async () => realContainers.summarizeLogs(f.tekuLogs)),
       readSettings: record("settings", async () => ({ ee_endpoint: "http://avado-dnp-nethermind.my.ava.do:8551" }))
     };
@@ -163,6 +163,28 @@ describe("Call: getDiagnostics", () => {
       expect(result.errors.sort()).to.deep.equal(["containers: timed out", "host: timed out"]);
       expect(result.host).to.equal(null);
       expect(result.containers).to.deep.equal([]);
+    } finally {
+      getDiagnostics._setCapMs(24000);
+    }
+  });
+
+  it("at the cap, docker jobs still waiting for their turn are named too", async () => {
+    const many = Array.from({ length: 8 }, (_, i) =>
+      realContainers.formatContainer(
+        Object.assign({}, f.tekuInspect, { Name: `/DAppNodePackage-app${i}.avado.dnp.dappnode.eth` }),
+        "Up",
+        now
+      )
+    );
+    // every docker exec hangs: 6 run, 2 wait for a turn
+    const { getDiagnostics, calls } = setup({ readContainers: async () => many, readProcesses: never });
+    getDiagnostics._setCapMs(60);
+    try {
+      const { result } = await getDiagnostics({ host: false, network: false, logs: false, clients: false });
+      expect(calls.filter(c => c === "processes")).to.have.length(6);
+      expect(result.errors.sort()).to.deep.equal(
+        many.map(c => `processes ${c.id}: timed out`).sort()
+      );
     } finally {
       getDiagnostics._setCapMs(24000);
     }
