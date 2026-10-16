@@ -85,9 +85,39 @@ async function track(kind, id, fn) {
   }
 }
 
+// Per-kind queues: the promise of the last call queued for that kind.
+const queues = new Map();
+
+/**
+ * Runs `fn` after every earlier call of the same `kind` has ended, however
+ * it ended. Calls of other kinds are not affected.
+ *
+ * Used for installs: two installs requested at once (e.g. the Admin and the
+ * DAPPMANAGER core updates clicked one after the other) must not run in
+ * parallel, because the DAPPMANAGER's self-restart at the end of its install
+ * kills every other install still running in this process, leaving a
+ * package with its old container stopped and no new one created.
+ *
+ * @param {string} kind e.g. "installPackage"
+ * @param {function} fn async work
+ * @returns {Promise} resolves/rejects as `fn` does
+ */
+function serialize(kind, fn) {
+  const previous = queues.get(kind) || Promise.resolve();
+  const run = previous.then(fn, fn);
+  // The queue tail never rejects, so a failure does not block the next call
+  const tail = run.then(
+    () => {},
+    () => {}
+  );
+  queues.set(kind, tail);
+  return run;
+}
+
 // Tests only
 function _reset() {
   running.clear();
+  queues.clear();
 }
 
 module.exports = {
@@ -95,6 +125,7 @@ module.exports = {
   list,
   isRunning,
   track,
+  serialize,
   assertNotIpfsReset,
   MAX_AGE,
   _reset

@@ -72,7 +72,10 @@ const installPackage = async (kwargs = {}) => {
       "The IPFS storage is being reset, so nothing can be installed or updated right now. Try again in a few minutes."
     );
   }
-  return operations.track("installPackage", kwargs.id, () => install(kwargs));
+  // Installs run one at a time: see operations.serialize
+  return operations.track("installPackage", kwargs.id, () =>
+    operations.serialize("installPackage", () => install(kwargs))
+  );
 };
 
 const install = async ({

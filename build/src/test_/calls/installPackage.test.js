@@ -93,6 +93,47 @@ describe("Call function: installPackage", function() {
   //     fs.writeFileSync(DOCKERCOMPOSE_PATH, dockerComposeTemplate);
   // });
 
+  it("runs two installs requested at once one after the other", async () => {
+    // A core update of the Admin followed by one of the DAPPMANAGER used to run
+    // in parallel: the DAPPMANAGER's self-restart then killed the Admin install
+    // half-way (old container stopped, new one never created).
+    const runOrder = [];
+    let releaseFirst;
+    const slowPackages = {
+      download: sinon.fake.resolves(),
+      run: sinon.stub().callsFake(async ({ pkg }) => {
+        runOrder.push(`${pkg.name} start`);
+        if (runOrder.length === 1) await new Promise(resolve => (releaseFirst = resolve));
+        runOrder.push(`${pkg.name} end`);
+      })
+    };
+    const installPackageSlow = proxyquire("calls/installPackage", {
+      "modules/packages": slowPackages,
+      "modules/dappGet": sinon.fake.resolves({ message: "ok", state: { [pkgName]: pkgVer } }),
+      "modules/getManifest": getManifest,
+      "modules/dockerList": dockerList,
+      "modules/lockPorts": sinon.fake.resolves([]),
+      eventBus: { eventBus: { emit: sinon.stub() }, eventBusTag },
+      "utils/isSyncing": isSyncing,
+      params: params,
+      db: db
+    });
+    const first = installPackageSlow({ id: pkgName });
+    const second = installPackageSlow({ id: pkgName });
+    // Let the first install reach packages.run and park there
+    for (let i = 0; i < 20 && !releaseFirst; i++) await new Promise(resolve => setImmediate(resolve));
+    expect(runOrder).to.deep.equal([`${pkgName} start`]);
+    releaseFirst();
+    await first;
+    await second;
+    expect(runOrder).to.deep.equal([
+      `${pkgName} start`,
+      `${pkgName} end`,
+      `${pkgName} start`,
+      `${pkgName} end`
+    ]);
+  });
+
   it("should install the package with correct arguments", async () => {
     const res = await installPackage({ id: pkgName });
     expect(res).to.be.an("object");
