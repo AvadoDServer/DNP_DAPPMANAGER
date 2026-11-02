@@ -55,6 +55,11 @@ lock_wait
 if dpkg --compare-versions "${DOCKER_VERSION}" "lt" "20.10.17"; then
     echo "current docker version: ${DOCKER_VERSION}" | tee -a ${LOGFILE}
     echo "Update required. Updating" | tee -a ${LOGFILE}
+    # Docker publishes no 20.10 packages for bookworm or newer; the bullseye ones install there.
+    if [ ! -d "/root/update/${DEBIAN_CODENAME}" ]; then
+        echo "No Docker packages for ${DEBIAN_CODENAME}, using the bullseye ones" | tee -a ${LOGFILE}
+        DEBIAN_CODENAME=bullseye
+    fi
     pushd /root/update/${DEBIAN_CODENAME}
     # update docker by installing new packages
     for pack in containerd.io_*.deb docker-ce_*.deb docker-ce-cli_*.deb; do #sequence is important
