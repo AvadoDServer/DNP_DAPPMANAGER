@@ -28,6 +28,15 @@ FROM --platform=linux/amd64 node:20-bookworm-slim
 
 # Same API version as the Docker 20.10 engines updateAvadoHost.sh installs
 ENV DOCKER_API_VERSION 1.41
+# docker-compose 1.x talks to the newest API the engine offers. From Docker 26
+# (API 1.45) image details no longer include "ContainerConfig", and compose 1.x
+# then fails every recreate of a container that has volumes (KeyError:
+# 'ContainerConfig'): package updates, restarts and the DAPPMANAGER's own
+# update via restartPatch, whose restart container inherits this variable.
+# Pinning compose to the same API as the docker CLI keeps that field. Docker
+# 20.10 hosts already speak exactly 1.41, so nothing changes for them; Docker
+# 29 (AVADO OS 2) accepts 1.41 too.
+ENV COMPOSE_API_VERSION 1.41
 ENV DOCKER_CLI_VERSION 20.10.24
 ENV DOCKER_COMPOSE_VERSION 1.29.2
 ENV DOCKER_COMPOSE_SHA256 f3f10cf3dbb8107e9ba2ea5f23c1d2159ff7321d16f0a23051d68d8e2547b323
