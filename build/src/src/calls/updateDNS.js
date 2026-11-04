@@ -1,11 +1,15 @@
 const shellExec = require("utils/shell");
 const logs = require("logs.js")(module);
+const dns = require("modules/dns");
 
 const updateDNS = async () => {
 
   await wrapErrors(async () => {
-    await shellExec(`/etc/periodic/1min/dns_updater`, true);   
+    await shellExec(`/etc/periodic/1min/dns_updater`, true);
   }, "updateDNS");
+  // The script only adds names; this also removes the names of packages
+  // that are gone and fixes changed IPs
+  await dns.syncSafe();
 
   return {
     message: `Updated DNS`,

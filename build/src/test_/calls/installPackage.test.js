@@ -83,6 +83,7 @@ describe("Call function: installPackage", function() {
     "modules/lockPorts": lockPorts,
     eventBus: eventBusPackage,
     "utils/isSyncing": isSyncing,
+    "./updateDNS": async () => ({}),
     params: params,
     db: db
   });
@@ -115,6 +116,7 @@ describe("Call function: installPackage", function() {
       "modules/lockPorts": sinon.fake.resolves([]),
       eventBus: { eventBus: { emit: sinon.stub() }, eventBusTag },
       "utils/isSyncing": isSyncing,
+      "./updateDNS": async () => ({}),
       params: params,
       db: db
     });

@@ -36,11 +36,16 @@ describe("Call function: restartPackage", function() {
       }
     };
     // Mock parse
+    const dns = { syncSafe: sinon.stub().resolves() };
     const restartPackage = proxyquire("calls/restartPackage", {
+      "modules/dns": dns,
       "modules/docker": docker,
       params: params
     });
     let res = await restartPackage({ id: PACKAGE_NAME });
+    // The new container's IP goes to its DNS name right after the up
+    sinon.assert.calledOnce(dns.syncSafe);
+    expect(dns.syncSafe.calledAfter(docker.safe.compose.up)).to.equal(true);
     sinon.assert.calledWith(docker.compose.stop, DOCKERCOMPOSE_PATH, {
       timeout: 180
     });
@@ -62,6 +67,7 @@ describe("Call function: restartPackage", function() {
     };
     const restartPatch = sinon.fake();
     const restartPackage = proxyquire("calls/restartPackage", {
+      "modules/dns": { syncSafe: sinon.stub().resolves() },
       "modules/docker": docker,
       "modules/restartPatch": restartPatch,
       params: params

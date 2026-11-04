@@ -5,6 +5,7 @@ const params = require("params");
 const docker = require("modules/docker");
 const { eventBus, eventBusTag } = require("eventBus");
 const operations = require("modules/operations");
+const dns = require("modules/dns");
 
 /**
  * Calls docker rm and docker up on a package
@@ -37,6 +38,10 @@ const restartPackage = async ({ id, timeout = 180 }) => {
   await docker.compose.stop(dockerComposePath, { timeout });
   await docker.compose.rm(dockerComposePath);
   await docker.safe.compose.up(dockerComposePath);
+
+  // The new container may have another IP: point its name at it now
+  // instead of at the next cron run. Never fails the restart.
+  await dns.syncSafe();
 
   // Emit packages update
   eventBus.emit(eventBusTag.emitPackages);

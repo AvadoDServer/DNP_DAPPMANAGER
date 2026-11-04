@@ -68,7 +68,10 @@ describe("Call function: removePackage", function() {
     }
   };
 
+  const dns = { syncSafe: sinon.stub().resolves() };
+
   const removePackage = proxyquire("calls/removePackage", {
+    "modules/dns": dns,
     "modules/docker": docker,
     "modules/dockerList": dockerList,
     eventBus: eventBusPackage,
@@ -94,6 +97,12 @@ describe("Call function: removePackage", function() {
       [dockerComposePath, { volumes: false }],
       `should call docker.compose.down for the package ${id}`
     );
+  });
+
+  it("should remove the package's DNS names after the containers are gone", async () => {
+    sinon.assert.calledOnce(dns.syncSafe);
+    sinon.assert.calledWith(dns.syncSafe, { removed: [id] });
+    expect(dns.syncSafe.calledAfter(docker.compose.down)).to.equal(true);
   });
 
   it("should emit an internal call to the eventBus", async () => {
