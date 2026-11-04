@@ -19,6 +19,7 @@ const isSyncing = require("utils/isSyncing");
 const isStoppedPackage = require("utils/isStoppedPackage");
 const getPath = require("utils/getPath");
 const envsHelper = require("utils/envsHelper");
+const { dropKeptSecretEnvs } = require("utils/secretEnvs");
 const { envNames } = require("utils/logSafeObjects");
 const parseManifestPorts = require("utils/parseManifestPorts");
 const { stringIncludes } = require("utils/strings");
@@ -201,7 +202,12 @@ const install = async ({
     const { name, isCore } = pkg.manifest;
     const defaultEnvs = envsHelper.getManifestEnvs(pkg.manifest) || {};
     const previousEnvs = envsHelper.load(name, isCore) || {};
-    const _userSetEnvs = userSetEnvs[pkg.manifest.name] || {};
+    // A secret setup field sent as "********" (the package list's mask) or
+    // empty keeps its current value
+    const _userSetEnvs = dropKeptSecretEnvs(
+      userSetEnvs[pkg.manifest.name] || {},
+      pkg.manifest
+    );
     /**
      * Merge ENVs by priority
      * 1. userSet on installation
