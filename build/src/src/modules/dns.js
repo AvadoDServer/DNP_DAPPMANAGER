@@ -422,8 +422,13 @@ async function syncOnce({ removed = [] } = {}) {
       errors.push(`${change.zone}: ${e.message}`);
     }
   }
-  if (deleted.length) logs.info(`DNS: removed names of packages that are gone: ${deleted.join(", ")}`);
-  if (set.length) logs.info(`DNS: updated ${set.join(", ")}`);
+  // One line each, with the my.ava.do names (the others follow the same packages)
+  const short = list => {
+    const mine = list.filter(n => /\.my\.ava\.do(=|$)/.test(n));
+    return `${(mine.length ? mine : list).join(", ")} (${list.length} records)`;
+  };
+  if (deleted.length) logs.info(`DNS: removed the names of packages that are gone: ${short(deleted)}`);
+  if (set.length) logs.info(`DNS: updated ${short(set)}`);
   if (errors.length) throw Error(`DNS update failed for ${errors.join("; ")}`);
   return { deleted, set, zonesRead: Object.keys(zones.live) };
 }
