@@ -28,6 +28,8 @@ module.exports = {
   notificationsGet: require("./notificationsGet"),
   notificationsRemove: require("./notificationsRemove"),
   notificationsTest: require("./notificationsTest"),
+  passwordChange: require("./passwordChange"),
+  passwordIsSecure: require("./passwordIsSecure"),
   removePackage: require("./removePackage"),
   requestChainData: require("./requestChainData"),
   resolveRequest: require("./resolveRequest"),
