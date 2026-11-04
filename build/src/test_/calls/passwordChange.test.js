@@ -23,7 +23,7 @@ describe("Calls: passwordChange, passwordIsSecure", () => {
     // The handler got the real values
     expect(received).to.deep.equal({ currentPassword: "avado", newPassword: "brand new 1234" });
     expect(logged).to.have.length(1);
-    expect(logged[0].kwargs).to.deep.equal({ currentPassword: "(hidden)", newPassword: "(hidden)" });
+    expect(logged[0].kwargs).to.deep.equal({ currentPassword: "********", newPassword: "********" });
     const everything = JSON.stringify(logged) + lines.join(" ") + JSON.stringify(reply);
     expect(everything).to.not.include("brand new 1234");
   });
@@ -40,7 +40,7 @@ describe("Calls: passwordChange, passwordIsSecure", () => {
     const reply = await call({ currentPassword: "guess1234", newPassword: "brand new 1234" });
     expect(reply).to.deep.equal({ success: false, message: "The current password is wrong." });
     expect(logged[0]).to.include({ level: "error", message: "The current password is wrong." });
-    expect(logged[0].kwargs).to.deep.equal({ currentPassword: "(hidden)", newPassword: "(hidden)" });
+    expect(logged[0].kwargs).to.deep.equal({ currentPassword: "********", newPassword: "********" });
     const everything = JSON.stringify(logged) + lines.join(" ");
     expect(everything).to.not.match(/guess1234|brand new 1234/);
   });
@@ -68,10 +68,10 @@ describe("Calls: passwordChange, passwordIsSecure", () => {
     expect(hideSecrets(kwargs)).to.equal(kwargs);
     expect(hideSecrets({ id: "x", keystorePassword: "k", secret: "s", mnemonic: "m", passphrase: "p" })).to.deep.equal({
       id: "x",
-      keystorePassword: "(hidden)",
-      secret: "(hidden)",
-      mnemonic: "(hidden)",
-      passphrase: "(hidden)"
+      keystorePassword: "********",
+      secret: "********",
+      mnemonic: "********",
+      passphrase: "********"
     });
     expect(hideSecrets(undefined)).to.equal(undefined);
   });

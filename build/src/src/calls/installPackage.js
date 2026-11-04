@@ -19,6 +19,7 @@ const isSyncing = require("utils/isSyncing");
 const isStoppedPackage = require("utils/isStoppedPackage");
 const getPath = require("utils/getPath");
 const envsHelper = require("utils/envsHelper");
+const { envNames } = require("utils/logSafeObjects");
 const parseManifestPorts = require("utils/parseManifestPorts");
 const { stringIncludes } = require("utils/strings");
 const updateDNS = require("./updateDNS");
@@ -211,12 +212,9 @@ const install = async ({
      */
     const envs = { ...defaultEnvs, ...previousEnvs, ..._userSetEnvs };
     envsHelper.write(name, isCore, envs);
+    // Names only: values can be secrets (an auth key typed in a setup field)
     logs.info(
-      `Wrote envs for DNP ${name} ${isCore ? "(Core)" : ""}:\n ${JSON.stringify(
-        envs,
-        null,
-        2
-      )}`
+      `Wrote envs for DNP ${name} ${isCore ? "(Core)" : ""}: ${envNames(envs)}`
     );
 
     // 6. Run requested packages

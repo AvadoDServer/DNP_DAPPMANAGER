@@ -1,22 +1,14 @@
 const logUserAction = require("./logUserAction");
 const logs = require("./logs")(module);
 
-// Kwargs whose values never reach a log: the activity log (userActionLogs,
-// also sent to the Admin and into diagnostics reports) and log lines see
-// "(hidden)" instead. passwordChange sends currentPassword and newPassword.
-const SECRET_KWARG = /pass(word|phrase)?$|secret|mnemonic|private.?key/i;
+const logSafeObjects = require("utils/logSafeObjects");
 
-function hideSecrets(kwargs) {
-  if (!kwargs || typeof kwargs !== "object" || Array.isArray(kwargs)) return kwargs;
-  let out = null;
-  for (const key of Object.keys(kwargs)) {
-    if (SECRET_KWARG.test(key)) {
-      if (!out) out = Object.assign({}, kwargs);
-      out[key] = "(hidden)";
-    }
-  }
-  return out || kwargs;
-}
+// What of a call's kwargs may reach a log: the activity log (userActionLogs,
+// also sent to the Admin) and log lines see "********" for every env value
+// (installPackage's userSetEnvs, updatePackageEnv's envs) and for every
+// secret-named kwarg (passwordChange's currentPassword and newPassword, a
+// keystorePassword, ...). See utils/logSafeObjects.
+const hideSecrets = logSafeObjects;
 
 /*
  * RPC register wrapper
@@ -40,8 +32,9 @@ const wrapErrors = (handler, event) =>
        * res = { message, result }
        */
 
-      // Log internally
-      logUserAction.log({ level: "info", event, ...res, kwargs });
+      // Log internally. The result returned below is the real one
+      const logRes = res && res.result !== undefined ? { ...res, result: logSafeObjects(res.result) } : res;
+      logUserAction.log({ level: "info", event, ...logRes, kwargs });
       const eventShort = event.replace(".dappmanager.dnp.dappnode.eth", "");
       if (res.logMessage) {
         logs.info(`RPC ${eventShort} success: ${res.message}`);

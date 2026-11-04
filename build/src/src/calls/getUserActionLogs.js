@@ -1,6 +1,7 @@
 const fs = require("fs");
 const { promisify } = require("util");
 const params = require("params");
+const logSafeObjects = require("utils/logSafeObjects");
 
 /**
  * Returns the user action logs. This logs are stored in a different
@@ -49,6 +50,7 @@ const getUserActionLogs = async ({ fromLog = 0, numLogs = 50 }) => {
     .split(/\r?\n/)
     .reverse()
     .slice(fromLog, fromLog + numLogs)
+    .map(hideOldSecrets)
     .join("\n");
 
   return {
@@ -56,5 +58,31 @@ const getUserActionLogs = async ({ fromLog = 0, numLogs = 50 }) => {
     result: userActionLogsSelected
   };
 };
+
+/**
+ * Lines written before 10.0.57 can hold env values (installPackage's
+ * userSetEnvs, updatePackageEnv's envs) and secrets: hide them in what is
+ * returned, as new lines are hidden when written. A line that is not JSON
+ * is returned as it is.
+ *
+ * @param {string} line one stringified userActionLog
+ * @returns {string}
+ */
+function hideOldSecrets(line) {
+  if (!line || line[0] !== "{") return line;
+  let log;
+  try {
+    log = JSON.parse(line);
+  } catch (e) {
+    return line;
+  }
+  const kwargs = logSafeObjects(log.kwargs);
+  const result = logSafeObjects(log.result);
+  if (kwargs === log.kwargs && result === log.result) return line;
+  const safe = Object.assign({}, log);
+  if (kwargs !== undefined) safe.kwargs = kwargs;
+  if (result !== undefined) safe.result = result;
+  return JSON.stringify(safe);
+}
 
 module.exports = getUserActionLogs;
