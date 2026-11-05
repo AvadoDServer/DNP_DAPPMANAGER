@@ -322,5 +322,12 @@
     "uploadedTo": {
       "http://80.208.229.228:35001": "Fri, 16 Oct 2026 11:42:54 GMT"
     }
+  },
+  "10.0.59": {
+    "hash": "/ipfs/QmYCh6n9M9Gtqjy9SBoDvs8Km9LKaFsZ1BXGWos1tFNM9F",
+    "type": "manifest",
+    "uploadedTo": {
+      "https://ipfs-upload.ava.do:443": "Thu, 05 Nov 2026 09:27:25 GMT"
+    }
   }
 }
