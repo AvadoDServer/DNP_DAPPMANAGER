@@ -58,6 +58,10 @@ const docker = {
     down: (dcPath, options) =>
       withOptions(`${compose(dcPath)} down`, withStopTimeout(dcPath, options)),
 
+    // Creates (or recreates with new settings) without starting
+    create: (dcPath, options) =>
+      withOptions(`${compose(dcPath)} up --no-start`, options),
+
     // Usage: start [SERVICE...]
     start: (dcPath, options) =>
       withOptions(`${compose(dcPath)} start`, options),

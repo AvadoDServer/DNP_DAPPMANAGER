@@ -32,6 +32,7 @@ require("./watchers/diskUsage");
 require("./watchers/autoupdate");
 require("./watchers/certificates");
 require("./watchers/dns");
+require("./watchers/backup");
 
 // Print version data
 require("./utils/getVersionData");
