@@ -280,7 +280,7 @@ async function reset() {
 /**
  * compose up -d, then up to 2 minutes for the API. IPFS counts as started
  * only when its container is in state "running" afterwards (not
- * "restarting" or "created", which dockerList also calls running).
+ * "restarting", which dockerList also calls running).
  * @returns {Promise<{ error, restarted, peersConnected, storePeersConnected }>}
  */
 async function startAndWait(log = () => {}) {

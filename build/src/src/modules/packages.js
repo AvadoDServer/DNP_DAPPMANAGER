@@ -102,19 +102,21 @@ async function download({ pkg, id }) {
  * - pkg: packageReq + its manifest. It is expected that in the previous step of the
  *        installation the manifest is attached to this object.
  * - id: task id to allow progress updates
+ * - noStart: the user stopped the package. Its container is recreated with
+ *   the new version but not started (`docker-compose up --no-start`), the
+ *   way DAppNode's installer keeps a stopped package stopped
  * @returns {*}
  */
-async function run({ pkg, id, timeout = 180 }) {
+async function run({ pkg, id, timeout = 180, noStart = false }) {
   const { name, manifest } = pkg;
   const { isCore, version } = manifest;
   const dockerComposePath = getPath.dockerCompose(name, params, isCore);
 
-  logUi({ id, name, message: "starting package... " });
-  // patch to prevent installer from crashing
-  if (name == "dappmanager.dnp.dappnode.eth") {
-    await restartPatch(name + ":" + version);
+  if (noStart && name != "dappmanager.dnp.dappnode.eth") {
+    logUi({ id, name, message: "updating, it stays stopped as you left it... " });
+    await docker.compose.create(dockerComposePath);
   } else {
-    await docker.compose.up(dockerComposePath, { timeout });
+    await start({ name, version, id, dockerComposePath, timeout });
   }
 
   // Clean old images. This command can throw errors.
@@ -132,7 +134,17 @@ async function run({ pkg, id, timeout = 180 }) {
     .catch(() => {});
 
   // Final log
-  logUi({ id, name, message: "package started" });
+  logUi({ id, name, message: noStart ? "package updated, still stopped" : "package started" });
+}
+
+async function start({ name, version, id, dockerComposePath, timeout }) {
+  logUi({ id, name, message: "starting package... " });
+  // patch to prevent installer from crashing
+  if (name == "dappmanager.dnp.dappnode.eth") {
+    await restartPatch(name + ":" + version);
+  } else {
+    await docker.compose.up(dockerComposePath, { timeout });
+  }
 }
 
 // Utilities

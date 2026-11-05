@@ -52,6 +52,20 @@ function mockTest() {
     expect(res).to.have.property("message");
   });
 
+  it("starts a package an update kept stopped (created, never started)", async () => {
+    sinon.restore();
+    sinon.replace(docker, "status", sinon.fake.resolves("created"));
+    sinon.replace(docker.compose, "start", sinon.fake.resolves());
+    try {
+      await togglePackage({ id: PACKAGE_NAME });
+      sinon.assert.calledWith(docker.compose.start, DOCKERCOMPOSE_PATH);
+    } finally {
+      sinon.restore();
+      sinon.replace(docker, "status", sinon.fake.resolves("running"));
+      sinon.replace(docker.compose, "stop", sinon.fake.resolves());
+    }
+  });
+
   it("should throw an error with wrong package name", async () => {
     let error = "--- togglePackage did not throw ---";
     try {

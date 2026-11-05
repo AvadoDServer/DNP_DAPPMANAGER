@@ -32,6 +32,9 @@ const togglePackage = async ({ id, timeout = 180 }) => {
     case "running":
       await docker.compose.stop(dockerComposePath, { timeout });
       break;
+    // An install or restore that kept the package stopped leaves its new
+    // container created, never started
+    case "created":
     case "exited":
       await docker.compose.start(dockerComposePath);
       break;

@@ -53,10 +53,12 @@ describe("Util: package install / download", () => {
   // docker .load .compose.up
   const dockerLoadSpy = sinon.spy();
   const dockerComposeUpSpy = sinon.spy();
+  const dockerComposeCreateSpy = sinon.spy();
   const docker = {
     load: dockerLoadSpy,
     compose: {
-      up: dockerComposeUpSpy
+      up: dockerComposeUpSpy,
+      create: dockerComposeCreateSpy
     }
   };
 
@@ -156,6 +158,21 @@ describe("Util: package install / download", () => {
         DOCKERCOMPOSE_PATH,
         { timeout: 180 }
       ]);
+    });
+  });
+
+  describe(".run, noStart: a package the user stopped", () => {
+    it("recreates the container without starting it (docker-compose up --no-start)", async () => {
+      dockerComposeUpSpy.resetHistory();
+      dockerComposeCreateSpy.resetHistory();
+      await run({
+        pkg: { name: PACKAGE_NAME, manifest: dnpManifest },
+        noStart: true
+      });
+      expect(dockerComposeCreateSpy.getCalls().map(c => c.args)).to.deep.equal([
+        [DOCKERCOMPOSE_PATH]
+      ]);
+      sinon.assert.notCalled(dockerComposeUpSpy);
     });
   });
 });
