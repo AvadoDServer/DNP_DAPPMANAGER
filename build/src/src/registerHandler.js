@@ -1,6 +1,15 @@
 const logUserAction = require("./logUserAction");
 const logs = require("./logs")(module);
 
+const logSafeObjects = require("utils/logSafeObjects");
+
+// What of a call's kwargs may reach a log: the activity log (userActionLogs,
+// also sent to the Admin) and log lines see "********" for every env value
+// (installPackage's userSetEnvs, updatePackageEnv's envs) and for every
+// secret-named kwarg (passwordChange's currentPassword and newPassword, a
+// keystorePassword, ...). See utils/logSafeObjects.
+const hideSecrets = logSafeObjects;
+
 /*
  * RPC register wrapper
  * ********************
@@ -10,19 +19,22 @@ const logs = require("./logs")(module);
 
 const wrapErrors = (handler, event) =>
   // function(args, kwargs, details)
-  async function(_, kwargs) {
+  async function(_, _kwargs) {
     logs.debug(`In-call to ${event}`);
+    // The handler gets the real kwargs; every log below the hidden ones
+    const kwargs = hideSecrets(_kwargs);
     // 0. args: an array with call arguments
     // 1. kwargs: an object with call arguments
     // 2. details: an object which provides call metadata
     try {
-      const res = await handler(kwargs);
+      const res = await handler(_kwargs);
       /**
        * res = { message, result }
        */
 
-      // Log internally
-      logUserAction.log({ level: "info", event, ...res, kwargs });
+      // Log internally. The result returned below is the real one
+      const logRes = res && res.result !== undefined ? { ...res, result: logSafeObjects(res.result) } : res;
+      logUserAction.log({ level: "info", event, ...logRes, kwargs });
       const eventShort = event.replace(".dappmanager.dnp.dappnode.eth", "");
       if (res.logMessage) {
         logs.info(`RPC ${eventShort} success: ${res.message}`);
@@ -60,7 +72,7 @@ const wrapErrors = (handler, event) =>
          */
         logs.warn(`Could not connect to ethchain node, on ${event}: ${msg}`);
         logUserAction.log({ level: "error", event, ...error2obj(e), kwargs });
-      } else if (kwargs.dontLogError) {
+      } else if (kwargs && kwargs.dontLogError) {
         /**
          * 3. Special feature so the UI can suppress noisy errors on recurring calls
          *    This is necessary for the fetchPackageData while the user is typing a name
@@ -98,5 +110,6 @@ function error2obj(e) {
 
 module.exports = {
   registerHandler,
-  wrapErrors
+  wrapErrors,
+  hideSecrets
 };

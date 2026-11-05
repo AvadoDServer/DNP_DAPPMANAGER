@@ -1,6 +1,9 @@
 /* eslint-disable no-useless-escape */
 const path = require("path");
+const fs = require("fs");
+const yaml = require("js-yaml");
 const recoverSignature = require("../../utils/recoverSignature");
+const { stopTimeoutOf } = require("../../utils/composeLimits");
 
 /**
  * Up to 10.0.45 the DAPPMANAGER bundled docker-compose 1.20.1, which takes the
@@ -42,7 +45,7 @@ const docker = {
     // --exit-code-from SERVICE   Return the exit code of the selected service
     //                            container. Implies --abort-on-container-exit.
     up: (dcPath, options) =>
-      withOptions(`${compose(dcPath)} up -d`, options),
+      withOptions(`${compose(dcPath)} up -d`, withStopTimeout(dcPath, options)),
 
     // Usage: down [options]
     // Options:
@@ -53,7 +56,11 @@ const docker = {
     //     --remove-orphans        Remove containers for services not defined in the Compose file
     //     -t, --timeout TIMEOUT   Specify a shutdown timeout in seconds. (default: 10)
     down: (dcPath, options) =>
-      withOptions(`${compose(dcPath)} down`, options),
+      withOptions(`${compose(dcPath)} down`, withStopTimeout(dcPath, options)),
+
+    // Creates (or recreates with new settings) without starting
+    create: (dcPath, options) =>
+      withOptions(`${compose(dcPath)} up --no-start`, options),
 
     // Usage: start [SERVICE...]
     start: (dcPath, options) =>
@@ -63,7 +70,7 @@ const docker = {
     // Options:
     // -t, --timeout TIMEOUT      Specify a shutdown timeout in seconds (default: 10).
     stop: (dcPath, options) =>
-      withOptions(`${compose(dcPath)} stop`, options),
+      withOptions(`${compose(dcPath)} stop`, withStopTimeout(dcPath, options)),
 
     // Usage: restart [options] [SERVICE...]
     // Options:
@@ -75,14 +82,14 @@ const docker = {
     rm_up: (dcPath, options) =>
       [
         withOptions(`${compose(dcPath)} rm -sf`, options),
-        withOptions(`${compose(dcPath)} up -d`, options)
+        withOptions(`${compose(dcPath)} up -d`, withStopTimeout(dcPath, options))
       ].join(" && "),
 
     // Usage: restart [options] [SERVICE...]
     // Options:
     // -t, --timeout TIMEOUT      Specify a shutdown timeout in seconds. (default: 10)
     restart: (dcPath, options) =>
-      withOptions(`${compose(dcPath)} restart`, options),
+      withOptions(`${compose(dcPath)} restart`, withStopTimeout(dcPath, options)),
 
     // Usage: logs [options] [SERVICE...]
     // Options:
@@ -178,6 +185,24 @@ const docker = {
   getContainerWorkingDir: id =>
     `docker inspect --format='{{json .Config.WorkingDir}}' ${id}`
 };
+
+/**
+ * A `timeout` given to a compose command replaces the services'
+ * stop_grace_period, so a package that declares a longer one (Bitcoin Core
+ * flushing its database) gets that longer time instead.
+ * @param {string} dcPath docker-compose path
+ * @param {object} options
+ */
+function withStopTimeout(dcPath, options) {
+  if (!options || options.timeout === undefined || isNaN(options.timeout)) return options;
+  let composeObj = null;
+  try {
+    composeObj = yaml.safeLoad(fs.readFileSync(dcPath, "utf8"));
+  } catch (e) {
+    return options;
+  }
+  return { ...options, timeout: stopTimeoutOf(composeObj, options.timeout) };
+}
 
 /**
  * Wrapper for parseOptions. Will only extend the command string if necessary

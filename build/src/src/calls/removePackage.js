@@ -12,6 +12,7 @@ const getPath = require("utils/getPath");
 const shell = require("utils/shell");
 const { stringIncludes } = require("utils/strings");
 const operations = require("modules/operations");
+const dns = require("modules/dns");
 
 /**
  * Remove package data: docker down + disk files
@@ -97,6 +98,10 @@ const removePackage = async ({ id, deleteVolumes = false }) => {
 
   // Remove DNP folder and files
   await shell(`rm -rf ${packageRepoDir}`);
+
+  // Remove its <name>.my.ava.do names, so they no longer answer with an IP
+  // another container may get. Never fails the removal.
+  await dns.syncSafe({ removed: [id] });
 
   // Emit packages update
   eventBus.emit(eventBusTag.emitPackages);

@@ -4,6 +4,7 @@ const { createLogger, format, transports } = winston;
 const Transport = require("winston-transport");
 const { eventBus, eventBusTag } = require("eventBus");
 const limitObjValuesSize = require("utils/limitObjValuesSize");
+const logSafeObjects = require("utils/logSafeObjects");
 const params = require("params");
 
 /*
@@ -62,14 +63,17 @@ const onlyUserAction = format(info => {
 });
 
 /**
- * Limit the length of objects.
- * RPC calls like copyTo may content really big dataUrls as kwargs,
- * prevent them from cluttering the userActionLogs file
+ * Hide env values and secrets (utils/logSafeObjects), then limit the length
+ * of objects. RPC calls like copyTo may content really big dataUrls as kwargs,
+ * prevent them from cluttering the userActionLogs file.
+ * registerHandler already hides them; this also covers logs from elsewhere
+ * (the VPN's logUserActionToDappmanager). New objects only: the caller's
+ * kwargs are never changed.
  */
 const maxLen = 500;
 const limitLength = format(info => {
-  if (info.kwargs) info.kwargs = limitObjValuesSize(info.kwargs, maxLen);
-  if (info.result) info.result = limitObjValuesSize(info.result, maxLen);
+  if (info.kwargs) info.kwargs = limitObjValuesSize(logSafeObjects(info.kwargs), maxLen);
+  if (info.result) info.result = limitObjValuesSize(logSafeObjects(info.result), maxLen);
   return info;
 });
 

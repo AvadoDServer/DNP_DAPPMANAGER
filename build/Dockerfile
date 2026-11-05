@@ -31,12 +31,19 @@ ENV DOCKER_API_VERSION 1.41
 ENV DOCKER_CLI_VERSION 20.10.24
 ENV DOCKER_COMPOSE_VERSION 1.29.2
 ENV DOCKER_COMPOSE_SHA256 f3f10cf3dbb8107e9ba2ea5f23c1d2159ff7321d16f0a23051d68d8e2547b323
+# Encrypted backups (modules/backup): restic, from its GitHub release, checked
+# against the SHA256SUMS of that release
+ENV RESTIC_VERSION 0.19.1
+ENV RESTIC_SHA256 f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c
 
 # procps: free (getStats), bind9-dnsutils: nsupdate (dns_updater),
 # miniupnpc: upnpc, xz-utils: package images, cron: dns_updater every minute
+# bzip2: restic download, cifs-utils: backups to a NAS, ntfs-3g: backups to
+# NTFS disks (the boxes' 5.10 kernel has no ntfs3)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      curl ca-certificates xz-utils miniupnpc bind9-dnsutils cron procps && \
+      curl ca-certificates xz-utils miniupnpc bind9-dnsutils cron procps \
+      bzip2 cifs-utils ntfs-3g && \
     rm -rf /var/lib/apt/lists/*
 
 # Docker CLI and docker-compose, both pinned. Compose stays on v1: it is what
@@ -50,6 +57,12 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-${D
     echo "${DOCKER_COMPOSE_SHA256}  /usr/local/bin/docker-compose" | sha256sum -c - && \
     chmod +x /usr/local/bin/docker-compose && \
     docker --version && docker-compose version
+
+RUN curl -fsSL -o /tmp/restic.bz2 \
+      https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2 && \
+    echo "${RESTIC_SHA256}  /tmp/restic.bz2" | sha256sum -c - && \
+    bunzip2 -c /tmp/restic.bz2 > /usr/local/bin/restic && rm /tmp/restic.bz2 && \
+    chmod +x /usr/local/bin/restic && restic version
 
 # Files for updating legacy Docker installations on the host
 # Debian Buster (10)

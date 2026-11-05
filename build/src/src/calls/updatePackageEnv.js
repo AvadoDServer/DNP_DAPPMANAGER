@@ -9,6 +9,7 @@ const dockerList = require("modules/dockerList");
 const parse = require("utils/parse");
 const getPath = require("utils/getPath");
 const envsHelper = require("utils/envsHelper");
+const { dropKeptSecretEnvs, readInstalledManifest } = require("utils/secretEnvs");
 const { stringIncludes } = require("utils/strings");
 
 /**
@@ -19,6 +20,9 @@ const { stringIncludes } = require("utils/strings");
  * envs = {
  *   ENV_NAME: ENV_VALUE
  * }
+ * An env the package's manifest marks as a secret setup field keeps its
+ * current value when it comes as "********" (what listPackages shows for it)
+ * or empty: an Admin that sends the whole table back never writes the mask.
  * @param {bool} restart flag to restart the DNP
  */
 const updatePackageEnv = async ({ id, envs, restart }) => {
@@ -46,7 +50,9 @@ const updatePackageEnv = async ({ id, envs, restart }) => {
 
   // Write envs
   const previousEnvs = envsHelper.load(id, dnp.isCore);
-  envsHelper.write(id, dnp.isCore, { ...previousEnvs, ...envs });
+  const manifest = readInstalledManifest(id, params, dnp.isCore);
+  const newEnvs = dropKeptSecretEnvs(envs, manifest);
+  envsHelper.write(id, dnp.isCore, { ...previousEnvs, ...newEnvs });
 
   if (restart) {
     const dockerComposePath = getPath.dockerComposeSmart(id, params);

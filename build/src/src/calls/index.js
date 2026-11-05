@@ -5,6 +5,13 @@
  */
 
 module.exports = {
+  backupFind: require("./backupFind"),
+  backupNow: require("./backupNow"),
+  backupOptions: require("./backupOptions"),
+  backupRestore: require("./backupRestore"),
+  backupSetup: require("./backupSetup"),
+  backupStatus: require("./backupStatus"),
+  backupTargets: require("./backupTargets"),
   changeIpfsTimeout: require("./changeIpfsTimeout"),
   copyFileFrom: require("./copyFileFrom"),
   copyFileTo: require("./copyFileTo"),
@@ -28,6 +35,13 @@ module.exports = {
   notificationsGet: require("./notificationsGet"),
   notificationsRemove: require("./notificationsRemove"),
   notificationsTest: require("./notificationsTest"),
+  passwordChange: require("./passwordChange"),
+  passwordIsSecure: require("./passwordIsSecure"),
+  pushGetKey: require("./pushGetKey"),
+  pushStatus: require("./pushStatus"),
+  pushSubscribe: require("./pushSubscribe"),
+  pushTest: require("./pushTest"),
+  pushUnsubscribe: require("./pushUnsubscribe"),
   removePackage: require("./removePackage"),
   requestChainData: require("./requestChainData"),
   resolveRequest: require("./resolveRequest"),

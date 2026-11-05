@@ -8,6 +8,7 @@ const docker = require("modules/docker");
 const parseDockerSystemDf = require("utils/parseDockerSystemDf");
 const getPath = require("utils/getPath");
 const envsHelper = require("utils/envsHelper");
+const { maskSecretEnvs } = require("utils/secretEnvs");
 const db = require("../db");
 
 // This call can fail because of:
@@ -57,6 +58,8 @@ async function dockerSystemDf() {
  *
  *   // Appended here
  *   envs: { ENV_NAME: "ENV_VALUE" }, {object}
+ *     an env the manifest's setupWizard marks as secret is "********" when
+ *     set and "" when not: its value never leaves the DAPPMANAGER
  *   manifest: <manifest object> {object}
  * }, ... ]
  */
@@ -76,9 +79,9 @@ const listPackages = async () => {
     // Append envFile and manifest
     dnpList = await Promise.all(dnpList.map(async dnp => {
         // Add env info, only if there are ENVs
+        let envs;
         try {
-            const envs = envsHelper.load(dnp.name, dnp.isCore);
-            if (Object.keys(envs).length) dnp.envs = envs;
+            envs = envsHelper.load(dnp.name, dnp.isCore);
         } catch (e) {
             logs.warn(`Error appending ${(dnp || {}).name} envs: ${e.stack}`);
         }
@@ -96,6 +99,13 @@ const listPackages = async () => {
             }
         } catch (e) {
             logs.warn(`Error appending ${(dnp || {}).name} manifest: ${e.message}`);
+        }
+
+        // Secret setup fields go to the Admin as "********" (set) or "" (not
+        // set), never as their value. The .env file keeps the real values.
+        if (envs) {
+            const safeEnvs = maskSecretEnvs(envs, dnp.manifest);
+            if (Object.keys(safeEnvs).length) dnp.envs = safeEnvs;
         }
 
         try {

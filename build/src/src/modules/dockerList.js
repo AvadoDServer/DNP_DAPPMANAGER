@@ -35,6 +35,27 @@ async function listMountedVolumeNames() {
   return [...names];
 }
 
+/**
+ * Name, state and IP per network of EVERY container, running or not
+ * (for the box's DNS names, see modules/dns)
+ * @returns {Promise<{ name: string, state: string, networks: Object<string, string> }[]>}
+ *   name without the leading "/", networks = { networkName: ip } ("" when stopped)
+ */
+async function listContainerAddresses() {
+  const containers = await dockerRequest("get", "/containers/json?all=true");
+  return (containers || []).map(c => {
+    const networks = {};
+    const nets = (c.NetworkSettings && c.NetworkSettings.Networks) || {};
+    for (const [net, info] of Object.entries(nets))
+      networks[net] = (info && info.IPAddress) || "";
+    return {
+      name: ((c.Names || [])[0] || "").replace(/^\//, ""),
+      state: c.State || "",
+      networks
+    };
+  });
+}
+
 async function runningPackagesInfo() {
   const containers = await listContainers();
   const containersObject = {};
@@ -142,5 +163,6 @@ function format(c) {
 module.exports = {
   listContainers,
   listMountedVolumeNames,
+  listContainerAddresses,
   runningPackagesInfo
 };
