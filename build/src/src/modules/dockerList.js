@@ -18,7 +18,34 @@ const CONTAINER_CORE_NAME_PREFIX = params.CONTAINER_CORE_NAME_PREFIX;
 
 async function listContainers() {
   const containers = await dockerRequest("get", "/containers/json?all=true");
-  return containers.map(format).filter(pkg => pkg.isDnp || pkg.isCore);
+  const dnps = containers.map(format).filter(pkg => pkg.isDnp || pkg.isCore);
+  // Rare, so one inspect each is cheap
+  await Promise.all(
+    dnps
+      .filter(dnp => dnp.state === "created")
+      .map(async dnp => {
+        dnp.startFailed = await startFailed(dnp.id);
+      })
+  );
+  return dnps;
+}
+
+/**
+ * A `created` container was never started. Docker records why a start failed
+ * (a port clash, a bad entrypoint): State.Error and a non-zero exit code.
+ * Without them it was made with `docker-compose up --no-start`, for a package
+ * kept stopped (see utils/isStoppedPackage).
+ * @param {string} id container id
+ * @returns {Promise<bool>} false when it cannot be read: then it stays stopped
+ */
+async function startFailed(id) {
+  try {
+    const { State = {} } = await dockerRequest("get", `/containers/${id}/json`);
+    return Boolean(State.Error) || Number(State.ExitCode || 0) !== 0;
+  } catch (e) {
+    logs.warn(`Error inspecting created container ${id}: ${e.message}`);
+    return false;
+  }
 }
 
 /**
@@ -156,7 +183,8 @@ function format(c) {
       mountPath: Destination
     })),
     state: c.State,
-    running: !/^Exited /i.test(c.Status)
+    // A created container (status "Created") was never started
+    running: c.State !== "created" && !/^Exited /i.test(c.Status)
   };
 }
 

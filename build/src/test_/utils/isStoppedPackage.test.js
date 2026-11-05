@@ -38,12 +38,19 @@ describe("Util: isStoppedPackage", () => {
     expect(stopped(own("exited"))).to.equal(true);
   });
 
-  it("a created package (an update whose container failed to start) is not stopped", () => {
-    expect(stopped(own("created"))).to.equal(false);
+  it("a created package whose start failed (an update that needs its fix) is not stopped", () => {
+    expect(stopped(own("created", { startFailed: true }))).to.equal(false);
   });
 
-  it("a failed recreate (exited leftover + created) is not stopped", () => {
-    expect(stopped(tmp("exited"), own("created"))).to.equal(false);
+  it("a failed recreate (exited leftover + created by a failed start) is not stopped", () => {
+    expect(
+      stopped(tmp("exited"), own("created", { startFailed: true }))
+    ).to.equal(false);
+  });
+
+  it("a created package that was never started (kept stopped by an update) is stopped", () => {
+    expect(stopped(own("created", { startFailed: false }))).to.equal(true);
+    expect(stopped(own("created"))).to.equal(true);
   });
 
   it("an exited leftover next to a running container is not stopped", () => {

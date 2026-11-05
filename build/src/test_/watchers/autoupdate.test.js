@@ -143,7 +143,7 @@ describe("Watcher: autoupdate", () => {
   });
 
   it("updates a created package: an update whose container failed to start gets its fix", async () => {
-    installed = [pkg(teku, "created")];
+    installed = [pkg(teku, "created", { startFailed: true })];
     storeHas(teku);
     await runWatcher();
     sinon.assert.calledOnce(installPackage);
@@ -151,12 +151,22 @@ describe("Watcher: autoupdate", () => {
   });
 
   it("updates a package left created after a failed recreate (exited leftover + created)", async () => {
-    installed = [leftover(teku), pkg(teku, "created")];
+    installed = [leftover(teku), pkg(teku, "created", { startFailed: true })];
     storeHas(teku);
     await runWatcher();
     sinon.assert.called(installPackage);
     for (const call of installPackage.getCalls())
       expect(call.args[0].id).to.equal(`${teku}@${newHash}`);
+  });
+
+  it("skips a package an Admin update kept stopped (created, never started)", async () => {
+    installed = [pkg(teku, "created", { startFailed: false })];
+    storeHas(teku);
+    await runWatcher();
+    sinon.assert.notCalled(installPackage);
+    expect(logged.join("\n")).to.match(
+      new RegExp(`${teku} has an update .* but is stopped \\(state=created\\)`)
+    );
   });
 
   it("updates a running package next to an exited leftover", async () => {

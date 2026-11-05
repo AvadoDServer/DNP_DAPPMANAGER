@@ -191,7 +191,8 @@ describe("Call function: installPackage", function() {
             manifest: { ...pkgManifest },
             name: pkgName,
             ver: pkgVer
-          }
+          },
+          noStart: false
         }
       ],
       `should call packages.run second for dependency ${depName}`
@@ -204,7 +205,8 @@ describe("Call function: installPackage", function() {
             manifest: { ...depManifest },
             name: depName,
             ver: depVer
-          }
+          },
+          noStart: false
         }
       ],
       `should call packages.run second for dependency ${depName}`
@@ -289,6 +291,7 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
     }),
     run: sinon.stub().resolves()
   };
+  const lockPorts = sinon.stub().resolves([]);
   const dappGet = async () => ({
     state: { [pkgName]: ver, [depName]: ver }
   });
@@ -305,7 +308,7 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
     "modules/dappGet": dappGet,
     "modules/getManifest": getManifest,
     "modules/dockerList": dockerList,
-    "modules/lockPorts": async () => [],
+    "modules/lockPorts": lockPorts,
     "utils/isSyncing": async () => false,
     "utils/envsHelper": envsHelper,
     "utils/logUi": () => {},
@@ -330,6 +333,7 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
   beforeEach(() => {
     packages.download.resetHistory();
     packages.run.resetHistory();
+    lockPorts.resetHistory();
     onDownload = () => {};
     fs.rmSync(params.REPO_DIR, { recursive: true, force: true });
   });
@@ -404,7 +408,7 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
   it("installs a package left created by an update whose container failed to start", async () => {
     containers = [
       leftover(pkgName),
-      container(pkgName, "created"),
+      { ...container(pkgName, "created"), startFailed: true },
       container(depName, "running")
     ];
     expect(await installError({ KEEP_STOPPED: true })).to.equal(null);
@@ -432,9 +436,136 @@ describe("Call function: installPackage, KEEP_STOPPED", function() {
     sinon.assert.callCount(packages.run, 2);
   });
 
-  it("a manual update from the Admin (no KEEP_STOPPED) still installs a stopped package", async () => {
+  it("a manual update from the Admin (no KEEP_STOPPED) still installs a stopped package, without starting it", async () => {
     containers = [container(pkgName, "exited"), container(depName, "exited")];
     expect(await installError({})).to.equal(null);
     sinon.assert.callCount(packages.run, 2);
+    for (const call of packages.run.getCalls())
+      expect(call.args[0].noStart).to.equal(true);
+  });
+});
+
+// The Admin's Install / Update (no options): a package the user stopped is
+// updated but stays stopped, dependencies included, as DAppNode's installer does
+describe("Call function: installPackage, stopped packages stay stopped", function() {
+  const pkgName = "fulcrum.avado.dnp.dappnode.eth";
+  const depName = "bitcoincore.avado.dnp.dappnode.eth";
+  const ver = "0.1.1";
+
+  let containers;
+  let onDownload;
+  let emitted;
+
+  const params = {
+    CONTAINER_NAME_PREFIX: "DAppNodePackage-",
+    DNCORE_DIR: "DNCORE",
+    REPO_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "installPackage-test-"))
+  };
+  const packages = {
+    download: sinon.stub().callsFake(async () => onDownload()),
+    run: sinon.stub().resolves()
+  };
+  const lockPorts = sinon.stub().resolves([{ number: 32769, type: "UDP" }]);
+  const installPackage = proxyquire("calls/installPackage", {
+    "modules/packages": packages,
+    "modules/dappGet": async () => ({ state: { [pkgName]: ver, [depName]: ver } }),
+    "modules/getManifest": async ({ name }) => ({
+      name,
+      type: "service",
+      image: { ports: ["50001:50001"] }
+    }),
+    "modules/dockerList": { listContainers: async () => containers },
+    "modules/lockPorts": lockPorts,
+    "utils/isSyncing": async () => false,
+    "utils/envsHelper": { getManifestEnvs: () => ({}), load: () => ({}), write: () => {} },
+    "utils/logUi": () => {},
+    "./updateDNS": async () => ({}),
+    eventBus: { eventBus: { emit: (...args) => emitted.push(args) }, eventBusTag },
+    db: { get: async key => key === "upnpAvailable" },
+    params
+  });
+
+  const container = (name, state, extra = {}) => ({
+    name,
+    packageName: `DAppNodePackage-${name}`,
+    state,
+    isCore: false,
+    ...extra
+  });
+  const runs = () =>
+    Object.fromEntries(
+      packages.run.getCalls().map(call => [call.args[0].pkg.name, call.args[0].noStart])
+    );
+  const lockedPortsOf = () => lockPorts.getCalls().map(call => call.args[0].pkg.name);
+
+  beforeEach(() => {
+    packages.download.resetHistory();
+    packages.run.resetHistory();
+    lockPorts.resetHistory();
+    onDownload = () => {};
+    emitted = [];
+  });
+
+  after(() => {
+    fs.rmSync(params.REPO_DIR, { recursive: true, force: true });
+  });
+
+  it("updates a stopped package and its stopped dependency without starting either", async () => {
+    containers = [container(pkgName, "exited"), container(depName, "exited")];
+    const res = await installPackage({ id: pkgName });
+    expect(runs()).to.deep.equal({ [pkgName]: true, [depName]: true });
+    // lockPorts would read the running container's ports and docker-compose up
+    expect(lockedPortsOf()).to.deep.equal([]);
+    expect(res.message).to.equal(
+      `Installed ${pkgName}. Still stopped, as you left it: fulcrum, bitcoincore`
+    );
+  });
+
+  it("installing an app does not start its stopped dependency (Electrum and a stopped Bitcoin Node)", async () => {
+    containers = [container(depName, "exited")];
+    const res = await installPackage({ id: pkgName });
+    expect(runs()).to.deep.equal({ [pkgName]: false, [depName]: true });
+    expect(lockedPortsOf()).to.deep.equal([pkgName]);
+    expect(res.message).to.include("Still stopped, as you left it: bitcoincore");
+  });
+
+  it("a new install starts, and a running dependency restarts", async () => {
+    containers = [container(depName, "running")];
+    const res = await installPackage({ id: pkgName });
+    expect(runs()).to.deep.equal({ [pkgName]: false, [depName]: false });
+    expect(lockedPortsOf()).to.deep.equal([pkgName, depName]);
+    expect(res.message).to.equal(`Installed ${pkgName}`);
+  });
+
+  it("a running package restarts as before", async () => {
+    containers = [container(pkgName, "running"), container(depName, "running")];
+    await installPackage({ id: pkgName });
+    expect(runs()).to.deep.equal({ [pkgName]: false, [depName]: false });
+  });
+
+  it("a package kept stopped by an earlier update (created, never started) stays stopped", async () => {
+    containers = [
+      container(pkgName, "created", { startFailed: false }),
+      container(depName, "created", { startFailed: true })
+    ];
+    await installPackage({ id: pkgName });
+    // The dependency's last start failed: that is a fix to install and start
+    expect(runs()).to.deep.equal({ [pkgName]: true, [depName]: false });
+  });
+
+  it("a package the user stops during the download stays stopped", async () => {
+    containers = [container(pkgName, "running"), container(depName, "running")];
+    onDownload = () => {
+      containers = [container(pkgName, "running"), container(depName, "exited")];
+    };
+    await installPackage({ id: pkgName });
+    expect(runs()).to.deep.equal({ [pkgName]: false, [depName]: true });
+  });
+
+  it("still opens the mapped ports of a package kept stopped", async () => {
+    containers = [container(pkgName, "exited"), container(depName, "exited")];
+    await installPackage({ id: pkgName });
+    const opened = emitted.filter(([tag, call]) => tag === eventBusTag.call && call.callId === "managePorts");
+    expect(opened).to.have.length(2);
   });
 });

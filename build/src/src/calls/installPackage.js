@@ -22,7 +22,7 @@ const envsHelper = require("utils/envsHelper");
 const { dropKeptSecretEnvs } = require("utils/secretEnvs");
 const { envNames } = require("utils/logSafeObjects");
 const parseManifestPorts = require("utils/parseManifestPorts");
-const { stringIncludes } = require("utils/strings");
+const { stringIncludes, shortName } = require("utils/strings");
 const updateDNS = require("./updateDNS");
 
 /**
@@ -58,10 +58,14 @@ const updateDNS = require("./updateDNS");
  * @param {object} options install options
  * - BYPASS_RESOLVER {bool}: Skips dappGet and just fetches first level dependencies
  * - BYPASS_CORE_RESTRICTION {bool}: Allows dncore DNPs from unverified sources (IPFS)
- * - KEEP_STOPPED {bool}: Throws instead of starting a package the user stopped
+ * - KEEP_STOPPED {bool}: Throws instead of updating a package the user stopped
  *   (utils/isStoppedPackage), dependencies included, and leaves the installed
  *   version's files in place. Set by the auto-updater.
  * options = { BYPASS_RESOLVER: true, BYPASS_CORE_RESTRICTION: true }
+ *
+ * A package the user stopped stays stopped, dependencies included: it is
+ * updated, but its new container is not started (packages.run noStart), as
+ * DAppNode's installer does. A new package starts, and a running one restarts.
  *
  * Refused while resetIpfsData runs: IPFS is down then. Every install is
  * registered in modules/operations while it runs, so resetIpfsData refuses
@@ -197,6 +201,7 @@ const install = async ({
   const runOrder = [...pkgs].sort(
     (a, b) => Number(isDappmanager(a)) - Number(isDappmanager(b))
   );
+  const keptStopped = [];
   for (const pkg of runOrder) {
     // 5. Set ENVs. Set userSetEnvs + the manifest defaults (if not previously set)
     const { name, isCore } = pkg.manifest;
@@ -223,9 +228,16 @@ const install = async ({
       `Wrote envs for DNP ${name} ${isCore ? "(Core)" : ""}: ${envNames(envs)}`
     );
 
-    // 6. Run requested packages
-    await packages.run({ pkg, id });
-    logs.info(`Started (docker-compose up) DNP ${pkg.name}`);
+    // 6. Run requested packages. Checked right before, so a package the user
+    // stops or starts during the download counts too
+    const noStart = await isStopped(pkg.name);
+    await packages.run({ pkg, id, noStart });
+    if (noStart) {
+      keptStopped.push(pkg.name);
+      logs.info(`Updated DNP ${pkg.name} without starting it: the user stopped it`);
+    } else {
+      logs.info(`Started (docker-compose up) DNP ${pkg.name}`);
+    }
 
     // 7. Open ports
     // 7A. Mapped ports: mappedPortsToOpen = [ {number: '30303', type: 'TCP'}, ... ]
@@ -235,7 +247,9 @@ const install = async ({
     // - lockPorts modifies the docker-compose and returns
     //   lockedPortsToOpen = [ {number: '32769', type: 'UDP'}, ... ]
     // - managePorts calls UPnP to open the ports
-    const lockedPortsToOpen = await lockPorts({ pkg });
+    // lockPorts reads the ports docker chose for the running container, then
+    // runs docker-compose up: skipped for a package kept stopped
+    const lockedPortsToOpen = noStart ? [] : await lockPorts({ pkg });
     if (lockedPortsToOpen.length)
       logs.info(
         `Locked ${lockedPortsToOpen.length} ports of DNP ${pkg.name
@@ -275,11 +289,25 @@ const install = async ({
   eventBus.emit(eventBusTag.packageModified);
 
   return {
-    message: `Installed ${req.req}`,
+    message: keptStopped.length
+      ? `Installed ${req.req}. Still stopped, as you left it: ${keptStopped
+        .map(shortName)
+        .join(", ")}`
+      : `Installed ${req.req}`,
     logMessage: true,
     userAction: true
   };
 };
+
+/**
+ * True when this package is installed and the user stopped it
+ *
+ * @param {string} name DNP .eth name
+ */
+async function isStopped(name) {
+  const installed = (await dockerList.listContainers()) || [];
+  return isStoppedPackage(name, installed);
+}
 
 /**
  * Throws if one of these packages is installed and stopped, before
