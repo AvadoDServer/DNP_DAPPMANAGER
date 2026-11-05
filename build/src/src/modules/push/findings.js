@@ -51,6 +51,13 @@ function clientLabel(name) {
   return label;
 }
 
+/**
+ * A client that crashed, keeps restarting or whose program failed. A client
+ * the owner stopped (Admin "Stop", or a program stopped from its own page)
+ * is stopped on purpose and is never "down": its container is "exited" with
+ * no uptime, or its program is STOPPED, and none of the checks below match.
+ * So stopping clients by hand never causes alerts.
+ */
 function isDown(c) {
   if (!c || !getClient(c.id)) return false;
   if (c.state === "restarting") return true;

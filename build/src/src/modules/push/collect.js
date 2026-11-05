@@ -162,7 +162,8 @@ async function readFeeRecipients(containers) {
  * Whether the client's active validators attested in the last finished
  * epoch, from the beacon node's standard liveness API
  * (POST /eth/v1/validator/liveness/{epoch}). Skipped while the beacon node
- * is syncing. { epoch, active, missed } or null.
+ * is syncing or has no execution client. Clients that are not running
+ * (stopped by the owner) are never read. { epoch, active, missed } or null.
  */
 async function readClientLiveness(client) {
   try {
@@ -170,6 +171,10 @@ async function readClientLiveness(client) {
     const sync = await getJson(`${client.beacon}/eth/v1/node/syncing`);
     const data = sync.body && sync.body.data;
     if (sync.status !== 200 || !data || data.is_syncing !== false) return null;
+    // Without its execution client (stopped by the owner, or down, which
+    // the client-down alert covers) the validators cannot attest: not an
+    // attestation alert of its own
+    if (data.el_offline === true || data.is_optimistic === true) return null;
     const headSlot = Number(data.head_slot);
     if (!Number.isFinite(headSlot) || headSlot < 2 * SLOTS_PER_EPOCH) return null;
     const pubkeys = await listKeys(client);

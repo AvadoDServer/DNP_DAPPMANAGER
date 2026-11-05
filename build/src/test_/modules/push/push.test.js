@@ -104,6 +104,8 @@ describe("Push alerts: findings", () => {
     // Stopped on purpose: never an alert
     expect(f.clientsDown([teku({ processes: [{ name: "teku", state: "STOPPED" }] })])).to.deep.equal([]);
     expect(f.clientsDown([teku({ state: "exited" })])).to.deep.equal([]);
+    // Stopped by the owner after it had crashed a few times: still no alert
+    expect(f.clientsDown([teku({ state: "exited", exitCode: 137, restartCount: 5, uptimeSeconds: null, processes: [] })])).to.deep.equal([]);
     // Not a chain client
     expect(f.clientsDown([teku({ id: "vaultwarden.avado.dnp.dappnode.eth", state: "restarting" })])).to.deep.equal([]);
     expect(f.clientsDown([teku({ id: "ethchain-geth.public.dappnode.eth", state: "restarting" })])[0].body).to.match(/cannot do their work/);
@@ -261,6 +263,11 @@ describe("Push alerts: collect", () => {
   it("liveness: nothing while syncing or when the endpoint is missing", async () => {
     const syncing = collectWith({ "GET http://172.33.0.5:5051/eth/v1/node/syncing": [200, { data: { is_syncing: true, head_slot: "3200" } }] });
     expect(await syncing.c.readLiveness(containers)).to.deep.equal({});
+    const noEl = collectWith({ "GET http://172.33.0.5:5051/eth/v1/node/syncing": [200, { data: { is_syncing: false, el_offline: true, head_slot: "3200" } }] });
+    expect(await noEl.c.readLiveness(containers)).to.deep.equal({});
+    const stopped = [{ id: "teku.avado.dnp.dappnode.eth", state: "exited" }];
+    Object.defineProperty(stopped[0], "ip", { value: "172.33.0.5" });
+    expect(collectWith({}).c.validatorClients(stopped)).to.deep.equal([]);
     const old = collectWith({
       "GET http://172.33.0.5:5051/eth/v1/node/syncing": [200, { data: { is_syncing: false, head_slot: "3200" } }],
       "GET http://172.33.0.5:9999/keymanager/eth/v1/keystores": [200, { data: [{ validating_pubkey: PK }] }],
