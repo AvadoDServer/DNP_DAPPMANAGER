@@ -5,6 +5,13 @@
  */
 
 module.exports = {
+  backupFind: require("./backupFind"),
+  backupNow: require("./backupNow"),
+  backupOptions: require("./backupOptions"),
+  backupRestore: require("./backupRestore"),
+  backupSetup: require("./backupSetup"),
+  backupStatus: require("./backupStatus"),
+  backupTargets: require("./backupTargets"),
   changeIpfsTimeout: require("./changeIpfsTimeout"),
   copyFileFrom: require("./copyFileFrom"),
   copyFileTo: require("./copyFileTo"),

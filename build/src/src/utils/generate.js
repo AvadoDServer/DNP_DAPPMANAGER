@@ -1,4 +1,5 @@
 const yaml = require("js-yaml");
+const composeLimits = require("./composeLimits");
 
 /*
  * Generates files needed by DNPs
@@ -6,7 +7,16 @@ const yaml = require("js-yaml");
  * - manifest
  */
 
-function dockerCompose(manifest, params) {
+/**
+ * @param {object} manifest
+ * @param {object} params
+ * @param {object} [options]
+ * @param {string[]} [options.presentDevices] host devices that exist (see
+ *   composeLimits.devices); when left out every allowed device is kept
+ * @param {function} [options.onNote] gets one sentence per manifest value
+ *   that was clamped or left out
+ */
+function dockerCompose(manifest, params, options = {}) {
     // Define docker compose parameters
     const DNS_SERVICE = params.DNS_SERVICE;
     const DNP_NETWORK = params.DNP_NETWORK;
@@ -124,6 +134,25 @@ function dockerCompose(manifest, params) {
     if (manifest.image.network_mode)
         service.network_mode = manifest.image.network_mode;
     if (manifest.image.command) service.command = manifest.image.command;
+
+    // Stop time, memory limit and host devices, each checked against caps
+    // first (utils/composeLimits). A value that fails the check is clamped
+    // or left out and reported through options.onNote; never an error.
+    const notes = [];
+    const grace = composeLimits.stopGracePeriod(manifest.image);
+    if (grace.value) service.stop_grace_period = grace.value;
+    if (grace.note) notes.push(grace.note);
+    const mem = composeLimits.memoryLimit(manifest.image);
+    if (mem.bytes) service.mem_limit = mem.bytes;
+    if (mem.note) notes.push(mem.note);
+    if (manifest.image.devices !== undefined) {
+        const dev = composeLimits.devices(manifest.image, options.presentDevices);
+        if (dev.devices.length) service.devices = dev.devices;
+        notes.push(...dev.notes);
+    }
+    if (notes.length && typeof options.onNote === "function") {
+        for (const note of notes) options.onNote(note);
+    }
 
     // Logging. Limit logs size, chains can grow the logs to > 20 GB
     // "json-file" is the default driver
