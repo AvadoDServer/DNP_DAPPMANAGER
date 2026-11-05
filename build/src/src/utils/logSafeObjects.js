@@ -11,7 +11,8 @@
  *   Tailscale's TS_AUTHKEY has a name no rule would guess.
  * - Secret-named keys at any depth (currentPassword, keystorePassword,
  *   passphrase, secret, mnemonic, privateKey, apiKey, token, authorization,
- *   authKey): the value becomes "********".
+ *   authKey) and a push subscription's endpoint, p256dh and auth (the
+ *   address and keys of the owner's phone): the value becomes "********".
  *
  * Adapted from DAppNode's logSafeObjects (dappnode/DNP_DAPPMANAGER,
  * packages/logger/src/logSafeObjects.ts, GPL-3.0), which hides secret-named
@@ -20,7 +21,7 @@
 
 const HIDDEN = "********";
 
-const SECRET_KEY = /pass(word|phrase)?$|password|passphrase|secret|mnemonic|private.?key|api.?key|auth.?key|token|authorization|bearer/i;
+const SECRET_KEY = /pass(word|phrase)?$|password|passphrase|secret|mnemonic|private.?key|api.?key|auth.?key|token|authorization|bearer|^auth$|^p256dh$|^endpoint$/i;
 const ENVS_KEY = /envs$/i;
 
 const isPlainObject = value =>
