@@ -59,3 +59,20 @@ describe("docker commands", function() {
     }
   });
 });
+
+describe("docker commands > stop_grace_period", () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const dockerCommands = require("modules/docker/dockerCommands");
+  it("raises -t to the package's stop_grace_period", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grace-"));
+    const dcPath = path.join(dir, "docker-compose.yml");
+    fs.writeFileSync(dcPath, "version: '3.4'\nservices:\n  a:\n    image: a\n    stop_grace_period: 600s\n");
+    expect(dockerCommands.compose.stop(dcPath, { timeout: 180 })).to.match(/stop --timeout 600$/);
+    expect(dockerCommands.compose.up(dcPath, { timeout: 180 })).to.match(/up -d --timeout 600$/);
+    expect(dockerCommands.compose.up(dcPath)).to.match(/up -d$/);
+    fs.writeFileSync(dcPath, "version: '3.4'\nservices:\n  a:\n    image: a\n");
+    expect(dockerCommands.compose.stop(dcPath, { timeout: 180 })).to.match(/stop --timeout 180$/);
+  });
+});

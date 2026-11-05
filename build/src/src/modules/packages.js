@@ -9,6 +9,9 @@ const params = require("params");
 const docker = require("modules/docker");
 const downloadImage = require("modules/downloadImage");
 const semver = require("semver");
+const { hostDevicesPresent } = require("modules/hostDevices");
+const { requestedHostDevices } = require("utils/composeLimits");
+const logs = require("logs.js")(module);
 
 // Promisify fs methods
 const removeFile = promisify(fs.unlink);
@@ -38,7 +41,18 @@ async function download({ pkg, id }) {
     validate.path(getPath.manifest(name, params, isCore)),
     generate.manifest(manifest)
   );
-  const dockerCompose = generate.dockerCompose(manifest, params);
+  // Devices that are not on this AVADO are left out, or docker would refuse
+  // to create the container (e.g. a Zigbee stick that is not plugged in)
+  const presentDevices = manifest.image && manifest.image.devices !== undefined
+    ? await hostDevicesPresent(requestedHostDevices(manifest.image))
+    : undefined;
+  const dockerCompose = generate.dockerCompose(manifest, params, {
+    presentDevices,
+    onNote: note => {
+      logs.warn(`${name}: ${note}`);
+      logUi({ id, name, message: note });
+    }
+  });
   logUi({ id, name, message: dockerCompose });
 
   await writeFile(
