@@ -364,3 +364,44 @@ Safe to call again after any failure.
   which can take hours for a new build.
 - `rebootHost` is not refused during a reset; a reboot mid-reset is safe (the
   stopped container comes back with Docker and re-inits its repo).
+
+## Temperatures
+
+### `getTemperatures()`
+
+The box's temperature sensors, for the Admin's Home (processor, NVMe drives,
+memory when it has a sensor). DAPPMANAGER 10.0.62 and newer; the Admin polls
+it every 30 seconds while Home is open. Read-only and cheap: a few small files
+in `/sys/class/hwmon`, read inside this container (sysfs shows the host's
+sensors, so no helper container). The module is `modules/temperatures.js`.
+
+```
+{
+  message,
+  result: {
+    sensors: [{
+      chip,     // hwmon driver: k10temp / zenpower / coretemp (processor),
+                // nvme / drivetemp (disks), spd5118 / jc42 (memory), ...
+      device,   // the sensor's parent device (an NVMe drive's PCI address)
+                // or null
+      label,    // e.g. "Tctl", "Composite", "Package id 0", or null
+      celsius,  // 69.5
+      high,     // the sensor's own "too hot" mark (tempN_max) or null
+      crit      // the sensor's own critical mark (tempN_crit) or null
+    }],
+    readAt      // ISO date of the reading, null when there is none
+  }
+}
+```
+
+Every chip is returned; the Admin picks which ones to show. Readings of 0 °C
+(an unwired `acpitz`), above 150 °C or unreadable are left out, and so are
+thresholds outside 0 to 150 °C (some drives report 65261.8 °C).
+
+- Each file is read under `timeout` (coreutils), the whole read under 5 s.
+- Concurrent callers share one read; its answer is reused for 10 s.
+- A read that fails or hangs returns the last good answer (with its `readAt`)
+  while it is less than 2 minutes old, and no sensors after that. A read stuck
+  on a hung drive is never joined by a second one, so a drive that stopped
+  answering costs one stuck `cat`, not one per poll.
+- Never throws: no sensors is `{ sensors: [], readAt: null }`.

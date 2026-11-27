@@ -24,6 +24,7 @@ module.exports = {
   getDiagnostics: require("./getDiagnostics"),
   getIpfsHealth: require("./getIpfsHealth"),
   getStats: require("./getStats"),
+  getTemperatures: require("./getTemperatures"),
   getUserActionLogs: require("./getUserActionLogs"),
   getVersionData: require("./getVersionData"),
   installPackage: require("./installPackage"),
